@@ -1,0 +1,25 @@
+# ROS2 Build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# IDEs
+.vscode/
+.idea/
+
+# Trash and backup
+trash/
+
+# OS specific
+.DS_Store
+Thumbs.db
