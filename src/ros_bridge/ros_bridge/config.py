@@ -34,6 +34,46 @@ import os
 # Path: 로그/이미지 저장 디렉터리를 문자열보다 안전하게 다루기 위해 사용한다.
 from pathlib import Path
 
+def load_env_file() -> None:
+    """
+    프로젝트 루트의 .env 파일을 읽어서 os.environ에 반영한다.
+    이미 shell에서 지정한 환경변수는 덮어쓰지 않는다.
+    """
+    env_path = os.environ.get("TANK_ENV_FILE")
+
+    if env_path:
+        candidates = [Path(env_path)]
+    else:
+        candidates = [
+            Path.cwd() / ".env",
+            Path(__file__).resolve().parents[3] / ".env",
+        ]
+
+    for path in candidates:
+        if not path.exists():
+            continue
+
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+
+                if not line or line.startswith("#"):
+                    continue
+
+                if "=" not in line:
+                    continue
+
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+
+                os.environ.setdefault(key, value)
+
+        print(f"[ENV] loaded: {path}")
+        break
+
+
+load_env_file()
 
 ############################################################
 # 1. OpenMP duplicate runtime workaround
