@@ -26,6 +26,11 @@ _frame_condition = Condition(_state_lock)
 _latest_frame: Optional[np.ndarray] = None
 _latest_frame_seq = 0
 _latest_frame_timestamp = 0.0
+_latest_frame_interval_ms: Optional[float] = None
+_source_fps_ema = 0.0
+_latest_raw_frame_bytes: Optional[bytes] = None
+_latest_raw_frame_seq = 0
+_latest_raw_frame_timestamp = 0.0
 _latest_frame_shape: Optional[List[int]] = None
 _latest_source_frame_shape: Optional[List[int]] = None
 _latest_detections: List[Dict[str, Any]] = []
@@ -43,6 +48,7 @@ _live_decode_worker_count = 0
 _LIVE_VIEW_DECODE_FPS = float(os.getenv("TANK_LIVE_VIEW_DECODE_FPS", "4"))
 _LIVE_VIEW_DECODE_INTERVAL = 1.0 / max(0.1, _LIVE_VIEW_DECODE_FPS)
 _LIVE_VIEW_MAX_SIDE = int(os.getenv("TANK_LIVE_VIEW_MAX_SIDE", "900"))
+_LIVE_VIEW_RAW_STREAM = os.getenv("TANK_LIVE_VIEW_RAW_STREAM", "true").strip().lower() in ("1", "true", "yes", "y")
 
 _CLASS_COLORS_BGR = {
     "tank": (0, 0, 255),
@@ -143,11 +149,23 @@ def _decode_worker_loop() -> None:
 def update_frame(image_bytes: bytes) -> Optional[List[int]]:
     """Queue a display frame for background decode. Returns the last known source shape."""
     global _pending_frame_bytes, _pending_frame_seq, _skipped_live_decode_count, _latest_error
+    global _latest_raw_frame_bytes, _latest_raw_frame_seq, _latest_raw_frame_timestamp
+    global _latest_frame_interval_ms, _source_fps_ema
     if cv2 is None or not image_bytes:
         with _frame_condition:
             _latest_error = "live_view: cv2 unavailable or empty frame"
             return None
     with _frame_condition:
+        now = time.time()
+        if _latest_raw_frame_timestamp > 0.0:
+            interval_ms = (now - _latest_raw_frame_timestamp) * 1000.0
+            if interval_ms > 0.0:
+                instantaneous_fps = 1000.0 / interval_ms
+                _source_fps_ema = instantaneous_fps if _source_fps_ema <= 0.0 else (_source_fps_ema * 0.8 + instantaneous_fps * 0.2)
+                _latest_frame_interval_ms = interval_ms
+        _latest_raw_frame_timestamp = now
+        _latest_raw_frame_seq += 1
+        _latest_raw_frame_bytes = image_bytes
         if _pending_frame_seq > _decoded_input_frame_seq:
             _skipped_live_decode_count += 1
         _pending_frame_seq += 1
@@ -463,6 +481,13 @@ def render_view_page() -> str:
                 display: block;
                 background: #000;
             }
+            #driveOverlay {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+            }
             #mapCanvas {
                 width: 100%;
                 height: 100%;
@@ -546,6 +571,7 @@ def render_view_page() -> str:
                     <div class="panel-title"><span>CENTER PANEL</span><span id="feedStatusText" class="feed-status-text">det=0 sync</span></div>
                     <div class="feed-wrap">
                         <img id="driveFeed" src="/video_feed" alt="drive feed">
+                        <canvas id="driveOverlay"></canvas>
                     </div>
                 </section>
                 <section class="panel right-panel">
@@ -1108,6 +1134,115 @@ def render_view_page() -> str:
                 if (Array.isArray(detect?.detections)) return detect.detections;
                 return [];
             }
+            function overlayClassColor(className) {
+                const key = String(className || "").toLowerCase();
+                const colors = { person: "#39ff88", car: "#ff8c00", tank: "#ff5b64", rock: "#ffca4f", house: "#b084ff" };
+                return colors[key] || "#d8ffe9";
+            }
+            function driveImageBox(canvas, sourceW, sourceH) {
+                const w = canvas.clientWidth || 1;
+                const h = canvas.clientHeight || 1;
+                const imageAspect = sourceW / Math.max(1, sourceH);
+                const boxAspect = w / Math.max(1, h);
+                if (boxAspect > imageAspect) {
+                    const drawH = h;
+                    const drawW = h * imageAspect;
+                    return { x: (w - drawW) * 0.5, y: 0, w: drawW, h: drawH };
+                }
+                const drawW = w;
+                const drawH = w / Math.max(0.001, imageAspect);
+                return { x: 0, y: (h - drawH) * 0.5, w: drawW, h: drawH };
+            }
+            function drawOverlayBox(ctx, box, color) {
+                ctx.save();
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.rect(box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1);
+                ctx.stroke();
+                const corner = Math.max(10, Math.min(24, Math.min(box.x2 - box.x1, box.y2 - box.y1) * 0.22));
+                const segments = [
+                    [box.x1, box.y1, box.x1 + corner, box.y1],
+                    [box.x1, box.y1, box.x1, box.y1 + corner],
+                    [box.x2, box.y1, box.x2 - corner, box.y1],
+                    [box.x2, box.y1, box.x2, box.y1 + corner],
+                    [box.x1, box.y2, box.x1 + corner, box.y2],
+                    [box.x1, box.y2, box.x1, box.y2 - corner],
+                    [box.x2, box.y2, box.x2 - corner, box.y2],
+                    [box.x2, box.y2, box.x2, box.y2 - corner],
+                ];
+                for (const [x1, y1, x2, y2] of segments) {
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+            function drawOverlayLabel(ctx, text, x, y, color, canvasW, canvasH) {
+                ctx.save();
+                ctx.font = "11px Consolas, monospace";
+                ctx.textBaseline = "top";
+                const padX = 6;
+                const padY = 4;
+                const metrics = ctx.measureText(text);
+                const textW = metrics.width;
+                const textH = 12;
+                let left = Math.max(4, Math.min(canvasW - textW - padX * 2 - 4, x));
+                let top = y - textH - padY * 2 - 7;
+                if (top < 4) top = Math.min(canvasH - textH - padY * 2 - 4, y + 6);
+                top = Math.max(4, top);
+                ctx.fillStyle = "rgba(4, 8, 6, 0.72)";
+                ctx.fillRect(left, top, textW + padX * 2, textH + padY * 2);
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1;
+                ctx.strokeRect(left, top, textW + padX * 2, textH + padY * 2);
+                ctx.fillStyle = color;
+                ctx.fillText(text, left + padX, top + padY);
+                ctx.restore();
+            }
+            function drawFeedOverlay(state) {
+                const canvas = byId("driveOverlay");
+                if (!canvas) return;
+                const rect = canvas.getBoundingClientRect();
+                const dpr = window.devicePixelRatio || 1;
+                const width = Math.max(1, Math.floor(rect.width * dpr));
+                const height = Math.max(1, Math.floor(rect.height * dpr));
+                if (canvas.width !== width || canvas.height !== height) {
+                    canvas.width = width;
+                    canvas.height = height;
+                }
+                const ctx = canvas.getContext("2d");
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.clearRect(0, 0, rect.width, rect.height);
+                if (state?.liveView?.rawStream !== true) return;
+                const metadata = state?.liveView?.latestDetectionMetadata || latestBridge(state)?.detect_result || {};
+                const shape = metadata.image_shape || state?.liveView?.latestSourceFrameShape || state?.yolo?.latestFrameShape || [];
+                const sourceW = Number(metadata.image?.width || shape[1] || byId("driveFeed")?.naturalWidth || 1920);
+                const sourceH = Number(metadata.image?.height || shape[0] || byId("driveFeed")?.naturalHeight || 1080);
+                if (!Number.isFinite(sourceW) || !Number.isFinite(sourceH) || sourceW <= 0 || sourceH <= 0) return;
+                const imageBox = driveImageBox(canvas, sourceW, sourceH);
+                const detections = getDetections(state);
+                for (const det of detections) {
+                    const bbox = det?.bbox;
+                    if (!Array.isArray(bbox) || bbox.length < 4) continue;
+                    const x1 = Number(bbox[0]);
+                    const y1 = Number(bbox[1]);
+                    const x2 = Number(bbox[2]);
+                    const y2 = Number(bbox[3]);
+                    if (![x1, y1, x2, y2].every(Number.isFinite)) continue;
+                    const mapped = {
+                        x1: imageBox.x + (x1 / sourceW) * imageBox.w,
+                        y1: imageBox.y + (y1 / sourceH) * imageBox.h,
+                        x2: imageBox.x + (x2 / sourceW) * imageBox.w,
+                        y2: imageBox.y + (y2 / sourceH) * imageBox.h,
+                    };
+                    const className = safe(det.className || det.class_name || det.modelClassName, "object");
+                    const color = overlayClassColor(className);
+                    drawOverlayBox(ctx, mapped, color);
+                    drawOverlayLabel(ctx, `${className} ${numberText(det.confidence, 2)}`, mapped.x1, mapped.y1, color, rect.width, rect.height);
+                }
+            }
             function feedStatusText(state) {
                 const liveView = state?.liveView || {};
                 const metadata = liveView.latestDetectionMetadata || latestBridge(state)?.detect_result || {};
@@ -1126,6 +1261,8 @@ def render_view_page() -> str:
                 } else {
                     text += liveView.asyncYoloEnabled ? " async waiting" : " sync";
                 }
+                const sourceFps = Number(liveView.liveViewSourceFps);
+                if (Number.isFinite(sourceFps) && sourceFps > 0) text += ` src=${sourceFps.toFixed(1)}fps`;
                 return text;
             }
             function updateFeedStatus(state) {
@@ -1482,6 +1619,7 @@ def render_view_page() -> str:
                     updateLeftPanel(latestState);
                     drawMap(latestState);
                     updateBottomStatus(latestState);
+                    drawFeedOverlay(latestState);
                 } catch (err) {
                     lastFetchOk = false;
                     const fallback = latestState || {};
@@ -1491,6 +1629,7 @@ def render_view_page() -> str:
                     updateLeftPanel(fallback);
                     drawMap(fallback);
                     updateBottomStatus(fallback);
+                    drawFeedOverlay(fallback);
                 }
             }
             async function fetchStaticMap() {
@@ -1536,12 +1675,16 @@ def render_view_page() -> str:
                 };
                 img.src = `${info.url}?t=${Date.now()}`;
             }
-            window.addEventListener("resize", () => drawMap(latestState || {}));
+            window.addEventListener("resize", () => {
+                drawMap(latestState || {});
+                drawFeedOverlay(latestState || {});
+            });
+            byId("driveFeed").addEventListener("load", () => drawFeedOverlay(latestState || {}));
             updateMapLegend();
             if (new URLSearchParams(window.location.search).get("map") === "ros") setMapTab("ros");
             fetchStaticMap();
             fetchDashboardState();
-            setInterval(fetchDashboardState, 300);
+            setInterval(fetchDashboardState, 200);
         </script>
     </body>
     </html>
@@ -1552,8 +1695,33 @@ def render_view_page() -> str:
 def generate_video_stream(web_fps: float = 20.0, jpeg_quality: int = 80):
     interval = 1.0 / max(1.0, float(web_fps))
     encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)] if cv2 is not None else []
+    last_sent_frame_seq = -1
+    last_sent_raw_seq = -1
+    last_sent_at = 0.0
     while True:
-        with _state_lock:
+        loop_started = time.perf_counter()
+        if _LIVE_VIEW_RAW_STREAM:
+            with _frame_condition:
+                if _latest_raw_frame_bytes is not None and _latest_raw_frame_seq == last_sent_raw_seq:
+                    _frame_condition.wait(timeout=interval)
+                raw_seq = _latest_raw_frame_seq
+                raw_bytes = _latest_raw_frame_bytes
+            if raw_bytes is not None and raw_seq == last_sent_raw_seq:
+                continue
+            if raw_bytes is not None:
+                now = time.perf_counter()
+                wait_sec = interval - (now - last_sent_at)
+                if wait_sec > 0:
+                    time.sleep(wait_sec)
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + raw_bytes + b"\r\n"
+                last_sent_raw_seq = raw_seq
+                last_sent_at = time.perf_counter()
+                continue
+
+        with _frame_condition:
+            if _latest_frame is not None and _latest_frame_seq == last_sent_frame_seq:
+                _frame_condition.wait(timeout=interval)
+            frame_seq = _latest_frame_seq
             frame = None if _latest_frame is None else _latest_frame.copy()
             detections = deepcopy(_latest_detections)
             metadata = deepcopy(_latest_detection_metadata)
@@ -1565,24 +1733,40 @@ def generate_video_stream(web_fps: float = 20.0, jpeg_quality: int = 80):
             ok, buffer = cv2.imencode(".jpg", frame, encode_params)
             if ok:
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
-        time.sleep(interval)
+        last_sent_frame_seq = frame_seq
+        last_sent_at = time.perf_counter()
+        elapsed = time.perf_counter() - loop_started
+        if frame_seq <= 0 and elapsed < interval:
+            time.sleep(interval - elapsed)
 
 
 def video_response(web_fps: float = 20.0, jpeg_quality: int = 80) -> Response:
-    return Response(generate_video_stream(web_fps=web_fps, jpeg_quality=jpeg_quality), mimetype="multipart/x-mixed-replace; boundary=frame")
+    response = Response(
+        generate_video_stream(web_fps=web_fps, jpeg_quality=jpeg_quality),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 def debug_state() -> Dict[str, Any]:
     with _state_lock:
         frame_age = time.time() - _latest_frame_timestamp if _latest_frame_timestamp else None
+        raw_age = time.time() - _latest_raw_frame_timestamp if _latest_raw_frame_timestamp else None
         det_age = time.time() - _latest_detection_timestamp if _latest_detection_timestamp else None
         return {
             "enabled": True,
             "opencvAvailable": cv2 is not None,
+            "rawStream": _LIVE_VIEW_RAW_STREAM,
             "latestFrameSeq": _latest_frame_seq,
+            "latestRawFrameSeq": _latest_raw_frame_seq,
             "latestFrameShape": deepcopy(_latest_frame_shape),
             "latestSourceFrameShape": deepcopy(_latest_source_frame_shape),
             "liveViewDecodeFps": _LIVE_VIEW_DECODE_FPS,
+            "liveViewSourceFps": _source_fps_ema,
+            "latestFrameIntervalMs": _latest_frame_interval_ms,
             "liveViewMaxSide": _LIVE_VIEW_MAX_SIDE,
             "latestLiveDecodeMs": _latest_live_decode_ms,
             "skippedLiveDecodeCount": _skipped_live_decode_count,
@@ -1591,6 +1775,7 @@ def debug_state() -> Dict[str, Any]:
             "liveDecodeWorkerCount": _live_decode_worker_count,
             "liveDecodeWorkerRunning": _decode_thread is not None and _decode_thread.is_alive(),
             "latestFrameAgeMs": None if frame_age is None else frame_age * 1000.0,
+            "latestRawFrameAgeMs": None if raw_age is None else raw_age * 1000.0,
             "latestDetectionCount": len(_latest_detections),
             "latestDetections": deepcopy(_latest_detections[:10]),
             "latestDetectionAgeMs": None if det_age is None else det_age * 1000.0,

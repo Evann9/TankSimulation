@@ -584,6 +584,8 @@ if _allowed_clients_env:
 else:
     ALLOWED_CLIENTS = DEFAULT_ALLOWED_CLIENTS
 
+REQUEST_LOG_ENABLED = os.environ.get("TANK_REQUEST_LOG", "false").strip().lower() in ("1", "true", "yes", "y")
+
 
 @app.before_request
 def block_other_clients():
@@ -593,7 +595,8 @@ def block_other_clients():
     if client_ip and "," in client_ip:
         client_ip = client_ip.split(",", 1)[0].strip()
 
-    print(f"[REQ] {client_ip} {request.method} {request.path}")
+    if REQUEST_LOG_ENABLED:
+        print(f"[REQ] {client_ip} {request.method} {request.path}")
     _fallback_count(request.path)
 
     if client_ip not in ALLOWED_CLIENTS:
@@ -644,8 +647,9 @@ def route_init():
     # 터미널 로그:
     # 시뮬레이터가 실제로 /init을 호출했는지,
     # 어떤 초기 설정값을 받아가는지 확인하기 위한 출력이다.
-    print("[init] config")
-    print(pretty(config))
+    if REQUEST_LOG_ENABLED:
+        print("[init] config")
+        print(pretty(config))
 
     # 현재 실행 중인 ROS2 bridge node를 가져온다.
     # bridge가 None이면 ROS2 node가 아직 준비되지 않은 상태이다.
@@ -685,7 +689,8 @@ def route_start():
     """Tank Challenge 공식 GET /start endpoint."""
 
     # 터미널에서 episode start 요청이 들어왔음을 확인한다.
-    print("[start] requested")
+    if REQUEST_LOG_ENABLED:
+        print("[start] requested")
 
     # ROS2 bridge node를 가져온다.
     bridge = get_bridge()
@@ -758,8 +763,9 @@ def route_info():
 
     # 터미널에는 /info 전체 원본이 아니라 compact 형태만 출력한다.
     # LiDAR points가 많으면 터미널이 과도하게 길어지기 때문이다.
-    print("[info] compact")
-    print(pretty(compact_payload.get("data", {})))
+    if REQUEST_LOG_ENABLED:
+        print("[info] compact")
+        print(pretty(compact_payload.get("data", {})))
 
     # 시뮬레이터에 성공 응답을 반환한다.
     # control은 향후 pause/reset 등의 episode 제어에 사용할 수 있다.
@@ -834,8 +840,9 @@ def route_get_action():
         _store_fallback_get_action(data, command)
 
     # 실제로 시뮬레이터에 반환하는 명령을 터미널에 출력한다.
-    print("🎮 /get_action response")
-    print(pretty(command))
+    if REQUEST_LOG_ENABLED:
+        print("🎮 /get_action response")
+        print(pretty(command))
 
     # 시뮬레이터는 이 JSON을 읽어서 전차 이동/포탑/발사를 수행한다.
     return jsonify(command)
@@ -1287,13 +1294,14 @@ def route_update_bullet():
         return jsonify({"status": "ERROR", "message": "Invalid request data"}), 400
 
     # 터미널에 탄착 좌표와 hit 대상을 출력한다.
-    print(
-        f"💥 /update_bullet "
-        f"x={data.get('x')} "
-        f"y={data.get('y')} "
-        f"z={data.get('z')} "
-        f"hit={data.get('hit')}"
-    )
+    if REQUEST_LOG_ENABLED:
+        print(
+            f"💥 /update_bullet "
+            f"x={data.get('x')} "
+            f"y={data.get('y')} "
+            f"z={data.get('z')} "
+            f"hit={data.get('hit')}"
+        )
 
     # bridge가 준비되어 있으면 탄착 정보를 ROS2 topic으로 publish한다.
     bridge = get_bridge()
@@ -1350,7 +1358,8 @@ def route_set_destination():
     pose_raw = bridge.handle_destination(x, y, z) if bridge else {"x": x, "y": y, "z": z}
 
     # 터미널에 원본 목적지 좌표를 출력한다.
-    print(f"🎯 /set_destination raw=({x}, {y}, {z})")
+    if REQUEST_LOG_ENABLED:
+        print(f"🎯 /set_destination raw=({x}, {y}, {z})")
 
     # 시뮬레이터에 목적지 수신 성공 응답을 반환한다.
     return jsonify({
@@ -1398,7 +1407,8 @@ def route_update_obstacle():
 
     # 터미널에는 장애물 데이터가 들어왔다는 이벤트만 출력한다.
     # 장애물 전체를 출력하면 로그가 길어질 수 있다.
-    print("🪨 /update_obstacle received")
+    if REQUEST_LOG_ENABLED:
+        print("🪨 /update_obstacle received")
 
     # bridge가 있으면 obstacle raw/list topic으로 publish한다.
     bridge = get_bridge()
@@ -1448,7 +1458,8 @@ def route_collision():
         return jsonify({"status": "error", "message": "No collision data received"}), 400
 
     # 터미널에 충돌 객체 이름과 위치를 출력한다.
-    print(f"💥 /collision object={data.get('objectName')} position={data.get('position')}")
+    if REQUEST_LOG_ENABLED:
+        print(f"💥 /collision object={data.get('objectName')} position={data.get('position')}")
 
     # bridge가 있으면 collision raw/point topic으로 publish한다.
     bridge = get_bridge()

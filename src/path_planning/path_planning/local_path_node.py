@@ -178,7 +178,7 @@ class LocalPathNode(Node):
         self.class_vote_by_confidence = bool(self._cfg(["mapping", "class_vote_by_confidence"], True))
 
         self.drop_stale_async_detection = bool(self._cfg(["async_detection", "drop_stale"], True))
-        self.max_async_result_age_ms = float(self._cfg(["async_detection", "max_result_age_ms"], 300.0))
+        self.max_async_result_age_ms = float(self._cfg(["async_detection", "max_result_age_ms"], 700.0))
 
         self.current_lifetime_sec = float(self._cfg(["rviz", "current_object_lifetime_sec"], 1.2))
         self.discovered_z_offset = float(self._cfg(["rviz", "discovered_marker_z_offset"], 1.5))
