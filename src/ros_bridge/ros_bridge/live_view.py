@@ -433,7 +433,7 @@ def render_view_page() -> str:
             .left-tabs {
                 height: 42px;
                 display: grid;
-                grid-template-columns: repeat(3, minmax(0, 1fr));
+                grid-template-columns: repeat(4, minmax(0, 1fr));
                 gap: 6px;
                 padding: 6px;
                 border-bottom: 1px solid var(--line-dim);
@@ -517,6 +517,91 @@ def render_view_page() -> str:
                 padding: 10px;
                 font-size: 12px;
             }
+            .route-compare {
+                display: grid;
+                gap: 8px;
+            }
+            .route-decision {
+                border: 1px solid var(--line-dim);
+                background: rgba(4, 12, 8, 0.84);
+                padding: 8px;
+                font-size: 11px;
+                color: var(--muted);
+            }
+            .route-decision strong {
+                display: block;
+                color: var(--green);
+                font-size: 12px;
+                margin-bottom: 3px;
+            }
+            .route-card {
+                border: 1px solid var(--line-dim);
+                background: rgba(7, 18, 12, 0.82);
+                padding: 8px;
+                min-width: 0;
+            }
+            .route-card.selected {
+                border-color: var(--green);
+                box-shadow: inset 0 0 0 1px rgba(57, 255, 136, 0.12);
+            }
+            .route-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+                margin-bottom: 6px;
+            }
+            .route-name {
+                min-width: 0;
+                color: var(--text);
+                font-size: 12px;
+                font-weight: 800;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .route-chip {
+                flex: 0 0 auto;
+                border: 1px solid currentColor;
+                padding: 2px 5px;
+                font-size: 10px;
+                font-weight: 800;
+            }
+            .route-summary {
+                color: var(--muted);
+                font-size: 11px;
+                line-height: 1.35;
+                margin-bottom: 8px;
+            }
+            .route-factor {
+                display: grid;
+                grid-template-columns: 46px minmax(0, 1fr) 42px;
+                align-items: center;
+                gap: 6px;
+                min-height: 18px;
+                color: var(--muted);
+                font-size: 10px;
+            }
+            .route-meter {
+                height: 4px;
+                background: rgba(216, 255, 233, 0.12);
+                overflow: hidden;
+            }
+            .route-meter span {
+                display: block;
+                height: 100%;
+                width: var(--score);
+                background: var(--factor-color);
+            }
+            .factor-low { --factor-color: var(--green); }
+            .factor-mid { --factor-color: var(--amber); }
+            .factor-high { --factor-color: var(--red); }
+            .factor-pending { --factor-color: var(--muted); }
+            .route-value {
+                text-align: right;
+                color: var(--text);
+                font-weight: 800;
+            }
             @media (max-width: 980px) {
                 body { overflow: auto; }
                 .mfd { min-height: 100vh; height: auto; grid-template-rows: auto auto auto; }
@@ -543,9 +628,10 @@ def render_view_page() -> str:
             </header>
             <main class="main-grid">
                 <section class="panel left-panel">
-                    <div class="panel-title"><span>LEFT PANEL</span><span id="leftPanelTitle">AI LOG</span></div>
+                    <div class="panel-title"><span>LEFT PANEL</span><span id="leftPanelTitle">ROUTE</span></div>
                     <div class="left-tabs">
-                        <button id="tab-ai" class="tab-button active" type="button" onclick="setTab('ai')">AI LOG</button>
+                        <button id="tab-route" class="tab-button active" type="button" onclick="setTab('route')">ROUTE</button>
+                        <button id="tab-ai" class="tab-button" type="button" onclick="setTab('ai')">AI</button>
                         <button id="tab-recon" class="tab-button" type="button" onclick="setTab('recon')">RECON</button>
                         <button id="tab-sensor" class="tab-button" type="button" onclick="setTab('sensor')">SENSOR</button>
                     </div>
@@ -578,7 +664,7 @@ def render_view_page() -> str:
             </footer>
         </div>
         <script>
-            let activeTab = "ai";
+            let activeTab = "route";
             let activeMapTab = "terrain";
             let latestState = null;
             let lastFetchOk = false;
@@ -588,6 +674,56 @@ def render_view_page() -> str:
             let overviewImage = null;
             let overviewImageLoaded = false;
             let overviewImageError = null;
+            const PENDING_ROUTE_FACTORS = [
+                { label: "DIST", value: "AI", level: "pending", score: null },
+                { label: "TIME", value: "AI", level: "pending", score: null },
+                { label: "TERRAIN", value: "AI", level: "pending", score: null },
+                { label: "PERSON", value: "AI", level: "pending", score: null },
+                { label: "HOUSE", value: "AI", level: "pending", score: null },
+                { label: "TANK", value: "AI", level: "pending", score: null },
+                { label: "OBS", value: "AI", level: "pending", score: null }
+            ];
+            const FALLBACK_ROUTE_CANDIDATES = {
+                selected: null,
+                decisionMode: "llm_pending",
+                decisionNote: "Waiting for LLM route assessment.",
+                candidates: [
+                    {
+                        id: "A",
+                        name: "LEFT ROUGH",
+                        side: "LEFT",
+                        role: "CANDIDATE",
+                        selected: false,
+                        color: "#39ff88",
+                        summary: "AI assessment pending.",
+                        riskScore: null,
+                        length: 242,
+                        points: [
+                            { x: 60, y: 27 }, { x: 50, y: 50 }, { x: 42, y: 100 },
+                            { x: 42, y: 150 }, { x: 42, y: 200 }, { x: 85, y: 240 }, { x: 117, y: 250 }
+                        ],
+                        factors: PENDING_ROUTE_FACTORS
+                    },
+                    {
+                        id: "B",
+                        name: "RIGHT FLAT",
+                        side: "RIGHT",
+                        role: "CANDIDATE",
+                        selected: false,
+                        color: "#44d9ff",
+                        summary: "AI assessment pending.",
+                        riskScore: null,
+                        length: 282,
+                        points: [
+                            { x: 60, y: 27 }, { x: 80, y: 30 }, { x: 120, y: 55 },
+                            { x: 155, y: 95 }, { x: 183, y: 116 }, { x: 192, y: 136 },
+                            { x: 186, y: 160 }, { x: 162, y: 190 }, { x: 138, y: 220 },
+                            { x: 117, y: 240 }, { x: 117, y: 250 }
+                        ],
+                        factors: PENDING_ROUTE_FACTORS
+                    }
+                ]
+            };
 
             function byId(id) { return document.getElementById(id); }
             function safe(value, fallback = "-") { return value === undefined || value === null || value === "" ? fallback : value; }
@@ -595,16 +731,33 @@ def render_view_page() -> str:
                 const n = Number(value);
                 return Number.isFinite(n) ? n.toFixed(digits) : "-";
             }
+            function escapeHtml(value) {
+                return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+                    "&": "&amp;",
+                    "<": "&lt;",
+                    ">": "&gt;",
+                    '"': "&quot;",
+                    "'": "&#39;"
+                }[char]));
+            }
+            function routeCandidateData(state) {
+                const payload = state?.routeCandidates;
+                return payload?.candidates?.length ? payload : FALLBACK_ROUTE_CANDIDATES;
+            }
+            function selectedRouteCandidate(payload) {
+                if (!payload?.selected) return null;
+                return payload?.candidates?.find((candidate) => candidate.selected || candidate.id === payload.selected) || null;
+            }
             function setStatusClass(element, status) {
                 element.classList.remove("status-ok", "status-warn", "status-error");
                 element.classList.add(status);
             }
             function setTab(tabName) {
                 activeTab = tabName;
-                for (const tab of ["ai", "recon", "sensor"]) {
+                for (const tab of ["route", "ai", "recon", "sensor"]) {
                     byId(`tab-${tab}`).classList.toggle("active", tab === tabName);
                 }
-                byId("leftPanelTitle").textContent = tabName === "ai" ? "AI LOG" : tabName === "recon" ? "RECON" : "SENSOR";
+                byId("leftPanelTitle").textContent = tabName === "route" ? "ROUTE" : tabName === "ai" ? "AI LOG" : tabName === "recon" ? "RECON" : "SENSOR";
                 updateLeftPanel(latestState || {});
             }
             function setMapTab(tabName) {
@@ -1235,6 +1388,51 @@ def render_view_page() -> str:
                     <div class="readout"><div class="label">${item.label}</div><div class="value">${item.value}</div></div>
                 `).join("")}</div>`;
             }
+            function renderRouteComparison(state) {
+                const payload = routeCandidateData(state);
+                const selected = selectedRouteCandidate(payload);
+                const metricHtml = (label, scoreValue, displayValue, levelValue = "pending") => {
+                    const hasScore = scoreValue !== null && scoreValue !== undefined && Number.isFinite(Number(scoreValue));
+                    const score = hasScore ? Math.max(0, Math.min(100, Number(scoreValue))) : 0;
+                    const level = ["low", "mid", "high", "pending"].includes(levelValue) ? levelValue : "pending";
+                    const value = displayValue ?? (hasScore ? numberText(score, 0) : "AI");
+                    return `
+                        <div class="route-factor factor-${level}">
+                            <span>${escapeHtml(label)}</span>
+                            <div class="route-meter"><span style="--score:${score}%"></span></div>
+                            <span class="route-value">${escapeHtml(value)}</span>
+                        </div>
+                    `;
+                };
+                const cards = (payload.candidates || []).map((candidate) => {
+                    const isSelected = candidate.selected || (payload.selected && candidate.id === payload.selected);
+                    const color = escapeHtml(candidate.color || "#39ff88");
+                    const factors = Array.isArray(candidate.factors) ? candidate.factors : [];
+                    const factorHtml = factors.map((factor) => {
+                        return metricHtml(factor.label, factor.score, factor.value, factor.level);
+                    }).join("");
+                    return `
+                        <div class="route-card ${isSelected ? "selected" : ""}">
+                            <div class="route-head">
+                                <div class="route-name" style="color:${color}">${escapeHtml(candidate.name || candidate.id)}</div>
+                                <div class="route-chip" style="color:${color}">${escapeHtml(candidate.role || candidate.id)}</div>
+                            </div>
+                            <div class="route-summary">${escapeHtml(candidate.summary || "-")}</div>
+                            ${metricHtml("SCORE", candidate.riskScore, candidate.riskLabel || null, isSelected ? "low" : "pending")}
+                            ${factorHtml}
+                        </div>
+                    `;
+                }).join("");
+                return `
+                    <div class="route-compare">
+                        <div class="route-decision">
+                            <strong>${escapeHtml(selected ? `${selected.side || selected.id} ROUTE SELECTED` : "AI DECISION PENDING")}</strong>
+                            ${escapeHtml(payload.decisionNote || "Route comparison is waiting for candidate data.")}
+                        </div>
+                        ${cards || '<div class="empty">No route candidates</div>'}
+                    </div>
+                `;
+            }
             function updateHeader(state) {
                 const yolo = state?.yolo || {};
                 const bridge = state?.bridge || {};
@@ -1260,6 +1458,10 @@ def render_view_page() -> str:
                 const yolo = state?.yolo || {};
                 const liveView = state?.liveView || {};
                 const sensor = state?.sensor || {};
+                if (activeTab === "route") {
+                    byId("leftContent").innerHTML = renderRouteComparison(state);
+                    return;
+                }
                 if (activeTab === "ai") {
                     const ai = state?.aiLog || latest.ai_log || latest.llm_log || latest.decision;
                     const values = Array.isArray(ai) ? ai : ai ? [ai] : [];
@@ -1345,6 +1547,62 @@ def render_view_page() -> str:
                     ctx.fillText(label, labelX + 5, labelY + 11);
                 }
                 ctx.restore();
+            }
+            function drawMapTag(ctx, text, point, color, width, height) {
+                if (!point || !text) return;
+                ctx.save();
+                ctx.font = "10px Consolas, monospace";
+                const labelW = Math.ceil(ctx.measureText(text).width) + 10;
+                const labelH = 16;
+                const x = Math.max(4, Math.min(width - labelW - 4, point.x + 8));
+                const y = Math.max(4, Math.min(height - labelH - 4, point.y - 20));
+                ctx.fillStyle = "rgba(3, 8, 5, 0.74)";
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1;
+                ctx.fillRect(x, y, labelW, labelH);
+                ctx.strokeRect(x + 0.5, y + 0.5, labelW - 1, labelH - 1);
+                ctx.fillStyle = color;
+                ctx.fillText(text, x + 5, y + 11);
+                ctx.restore();
+            }
+            function drawRouteCandidateOverlay(ctx, mapper, state, width, height) {
+                const payload = routeCandidateData(state);
+                const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+                if (!mapper || !candidates.length) return;
+                const ordered = [...candidates].sort((a, b) => Number(a.selected || a.id === payload.selected) - Number(b.selected || b.id === payload.selected));
+                for (const candidate of ordered) {
+                    const isSelected = candidate.selected || (payload.selected && candidate.id === payload.selected);
+                    const routePoints = Array.isArray(candidate.points)
+                        ? candidate.points.map(readPoint).filter(Boolean)
+                        : [];
+                    if (routePoints.length < 2) continue;
+                    const points = routePoints.map(mapper);
+                    const color = candidate.color || (isSelected ? "#39ff88" : "#44d9ff");
+                    ctx.save();
+                    ctx.lineJoin = "round";
+                    ctx.lineCap = "round";
+                    ctx.globalAlpha = isSelected ? 0.92 : 0.66;
+                    ctx.strokeStyle = "rgba(0, 0, 0, 0.78)";
+                    ctx.lineWidth = isSelected ? 6.5 : 5;
+                    ctx.beginPath();
+                    points.forEach((p, index) => index === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+                    ctx.stroke();
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = isSelected ? 3.2 : 2.2;
+                    ctx.setLineDash(isSelected ? [] : [7, 5]);
+                    ctx.beginPath();
+                    points.forEach((p, index) => index === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+                    ctx.stroke();
+                    ctx.restore();
+                    const labelPoint = points[Math.max(1, Math.floor(points.length * 0.45))];
+                    const label = isSelected ? `${candidate.side || candidate.id} SELECTED` : `${candidate.side || candidate.id} ${candidate.id || ""}`.trim();
+                    drawMapTag(ctx, label, labelPoint, color, width, height);
+                }
+                const selected = selectedRouteCandidate(payload);
+                const start = readPoint(payload.start || selected?.points?.[0]);
+                const destination = readPoint(payload.destination || selected?.points?.[selected?.points?.length - 1]);
+                drawSymbol(ctx, start ? mapper(start) : null, "#d8ffe9", "", "circle");
+                drawSymbol(ctx, destination ? mapper(destination) : null, "#ffca4f", "", "diamond");
             }
             function drawStaticObject(ctx, point, category) {
                 if (!point) return;
@@ -1478,6 +1736,7 @@ def render_view_page() -> str:
                         } else {
                             drawRosMapBase(ctx, staticPoint, staticMap);
                         }
+                        drawRouteCandidateOverlay(ctx, staticPoint, state, w, h);
                     } else if (staticMapLoadError) {
                         ctx.fillStyle = "#ff5b64";
                         ctx.font = "12px Consolas, monospace";

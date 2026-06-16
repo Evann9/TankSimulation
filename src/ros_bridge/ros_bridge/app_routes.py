@@ -30,6 +30,11 @@ from copy import deepcopy
 from pathlib import Path
 from threading import Lock
 
+try:
+    import yaml
+except Exception:  # pragma: no cover - route UI has a built-in fallback.
+    yaml = None
+
 
 ############################################################
 # 2. Flask import
@@ -552,6 +557,123 @@ def _load_static_map_payload() -> Dict[str, Any]:
         }
     return payload
 
+
+def _resolve_route_config_path() -> Path:
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        share_path = Path(get_package_share_directory("path_planning")) / "config" / "routes.yaml"
+        if share_path.exists():
+            return share_path
+    except Exception:
+        pass
+    return Path(__file__).resolve().parents[2] / "path_planning" / "config" / "routes.yaml"
+
+
+def _route_point(raw: Any) -> Dict[str, float]:
+    return {"x": float(raw[0]), "y": float(raw[1])}
+
+
+def _route_length(points: list[Dict[str, float]]) -> float:
+    total = 0.0
+    for prev, cur in zip(points, points[1:]):
+        dx = cur["x"] - prev["x"]
+        dy = cur["y"] - prev["y"]
+        total += (dx * dx + dy * dy) ** 0.5
+    return total
+
+
+def _fallback_route_candidates() -> Dict[str, Any]:
+    start = [60.0, 27.0]
+    destination = [117.0, 250.0]
+    return _route_candidate_payload(
+        {
+            "start": start,
+            "destination": destination,
+            "routes": {
+                "A": [[50.0, 50.0], [42.0, 100.0], [42.0, 150.0], [42.0, 200.0], [85.0, 240.0]],
+                "B": [[80.0, 30.0], [120.0, 55.0], [155.0, 95.0], [183.0, 116.0], [192.0, 136.0], [186.0, 160.0], [162.0, 190.0], [138.0, 220.0], [117.0, 240.0]],
+            },
+        },
+        "built_in",
+    )
+
+
+def _pending_route_factors() -> list[Dict[str, Any]]:
+    return [
+        {"label": label, "value": "AI", "level": "pending", "score": None}
+        for label in ("DIST", "TIME", "TERRAIN", "PERSON", "HOUSE", "TANK", "OBS")
+    ]
+
+
+def _route_candidate_payload(route_map: Dict[str, Any], source: str) -> Dict[str, Any]:
+    start_raw = route_map.get("start") or [60.0, 27.0]
+    destination_raw = route_map.get("destination") or [117.0, 250.0]
+    routes = route_map.get("routes") if isinstance(route_map.get("routes"), dict) else {}
+    meta = {
+        "A": {
+            "name": "LEFT ROUGH",
+            "side": "LEFT",
+            "role": "CANDIDATE",
+            "color": "#39ff88",
+            "summary": "AI assessment pending.",
+            "riskScore": None,
+            "factors": _pending_route_factors(),
+        },
+        "B": {
+            "name": "RIGHT FLAT",
+            "side": "RIGHT",
+            "role": "CANDIDATE",
+            "color": "#44d9ff",
+            "summary": "AI assessment pending.",
+            "riskScore": None,
+            "factors": _pending_route_factors(),
+        },
+    }
+    start = _route_point(start_raw)
+    destination = _route_point(destination_raw)
+    candidates = []
+    for route_id in ("A", "B"):
+        raw_points = routes.get(route_id)
+        if not isinstance(raw_points, list):
+            continue
+        points = [start] + [_route_point(point) for point in raw_points] + [destination]
+        route_meta = deepcopy(meta[route_id])
+        route_meta.update(
+            {
+                "id": route_id,
+                "selected": False,
+                "points": points,
+                "length": _route_length(points),
+            }
+        )
+        candidates.append(route_meta)
+    return {
+        "source": source,
+        "mapName": "recon_map",
+        "selected": None,
+        "start": start,
+        "destination": destination,
+        "decisionMode": "llm_pending",
+        "decisionNote": "Waiting for LLM route assessment.",
+        "candidates": candidates,
+    }
+
+
+def _load_route_candidates_payload() -> Dict[str, Any]:
+    path = _resolve_route_config_path()
+    if yaml is None or not path.exists():
+        return _fallback_route_candidates()
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        route_map = data.get("recon_map")
+        if not isinstance(route_map, dict):
+            return _fallback_route_candidates()
+        return _route_candidate_payload(route_map, str(path))
+    except Exception:
+        return _fallback_route_candidates()
+
 ############################################################
 # 4-1. Client IP allowlist
 ############################################################
@@ -1011,6 +1133,7 @@ def route_dashboard_state():
         "reconLog": [],
         "sensor": {},
         "staticMap": {},
+        "routeCandidates": {},
     }
 
     try:
@@ -1115,6 +1238,8 @@ def route_dashboard_state():
         }
     except Exception as exc:  # noqa: BLE001
         payload["staticMap"] = {"loaded": False, "error": str(exc)}
+
+    payload["routeCandidates"] = _load_route_candidates_payload()
 
     return jsonify(payload)
 
