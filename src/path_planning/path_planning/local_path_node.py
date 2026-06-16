@@ -165,7 +165,7 @@ class LocalPathNode(Node):
         self.mapping_enabled = bool(self._cfg(["mapping", "enabled"], True))
         self.merge_radius_m = float(self._cfg(["mapping", "merge_radius_m"], 5.0))
         self.ema_alpha = float(self._cfg(["mapping", "position_ema_alpha"], 0.35))
-        self.add_classes = set(str(x).lower() for x in self._cfg(["mapping", "add_classes"], ["person", "rock", "tank", "wall", "tent"]))
+        self.add_classes = set(str(x).lower() for x in self._cfg(["mapping", "add_classes"], ["person", "rock", "tank", "car", "house"]))
         self.save_directory = Path(str(self._cfg(["mapping", "save_directory"], "~/tank_discovered_maps"))).expanduser()
         self.save_latest_filename = str(self._cfg(["mapping", "save_latest_filename"], "discovered_objects_latest.map"))
         self.save_timestamped_copy = bool(self._cfg(["mapping", "save_timestamped_copy"], True))
@@ -1046,7 +1046,7 @@ class LocalPathNode(Node):
         name = prefab.lower()
         if name.startswith("human"):
             return "person"
-        for prefix, category in (("rock", "rock"), ("wall", "wall"), ("tank", "tank"), ("tent", "tent"), ("tree", "tree"), ("house", "house")):
+        for prefix, category in (("rock", "rock"), ("tank", "tank"), ("tree", "tree"), ("house", "house"), ("car", "car")):
             if name.startswith(prefix):
                 return category
         return "unknown"

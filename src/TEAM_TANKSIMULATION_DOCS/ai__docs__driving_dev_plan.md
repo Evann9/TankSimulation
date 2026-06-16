@@ -18,8 +18,8 @@
 - 구조: `terrainIndex` (지형 번호) + `obstacles` 배열. 각 obstacle은 prefabName, position(x,y,z), rotation(quaternion).
 - 세 맵 모두 terrainIndex 5 (동일 험지).
 - notree.map: obstacles 비어 있음 (베이스 험지).
-- recon_map.map: obstacles 1212개. mission_map.map: 1204개.
-- prefab 종류: Tree(나무), Rock(바위), Wall(벽), House001/House002(건물), Tent(텐트), Human(사람).
+- 현재 정적/MFD 기본 맵 finalmap.map: obstacles 320개. 비교용 mission_map.map: 1204개. 과거 recon_map.map은 1160개로 남아 있으나 기본 정적 맵 경로에서는 사용하지 않는다.
+- prefab 종류: Tree(나무), Rock(바위), House001/House002(건물), Human(사람), Car(차량).
 - 맵 범위: x 약 1.7~299.9, z 약 1.0~297.9 (대략 300x300 평면), y(높이) 약 6.8~23.9.
 - 지형의 높이맵과 강 위치는 파일에 없다. terrainIndex가 시뮬레이터 내장 지형을 가리킬 뿐이다. 강/언덕/바위지대는 terrain 5에 고정되어 렌더링된다.
 
@@ -213,7 +213,7 @@ LiDAR ------------------------> [Local Control] Pure Pursuit + APF --> /get_acti
 - 험지 라이다의 terrain/obstacle 분리가 이 단계 최대 난제. 평지 인지보다 훨씬 까다롭다. 7장 단계적 접근으로 분리해서 다룬다.
 - APF 지역 최소점. 갇힘 감지/탈출 로직 필요.
 - map의 position이 다른 API와 같은 좌표계라는 보장이 아직 없다 (2장에서 검증 전까지 가정).
-- recon_map(1212)과 mission_map(1204)의 obstacle 차이가 "돌발 장애물"인지 확인 필요. 두 맵 diff로 Scenario 2 돌발 요소를 정의할 수 있으나, 무작위 출현이면 별도 주입 방식일 수 있음.
+- finalmap(320)과 mission_map(1204)의 obstacle 차이가 "돌발 장애물"인지 확인 필요. 현재 production 인식/fusion class는 rock/person/tank/car/house이며, 그 밖의 prefab은 정적 비교/표시에서 unknown으로 취급된다.
 - 1번 실험이 끝나지 않으면 Local 파라미터(lookahead 등)를 임시값으로 둘 수밖에 없다. 실험 완료가 선행되어야 정밀 튜닝 가능.
 
 범위 밖 (이 단계에서 안 함):

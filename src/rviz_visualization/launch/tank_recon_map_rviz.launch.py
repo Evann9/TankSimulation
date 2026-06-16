@@ -4,9 +4,9 @@ Launch RViz with only the drone reconnaissance static map layer.
 
 Use this when the presentation/story should show only what the tank knows before
 mission execution:
-- recon_map.map -> /tank/rviz/recon_map_markers
-- recon_map.map -> /tank/map/recon/occupancy_grid
-- recon_map.map -> /tank/map/recon/risk_grid
+- finalmap.map -> /tank/rviz/recon_map_markers
+- finalmap.map -> /tank/map/recon/occupancy_grid
+- finalmap.map -> /tank/map/recon/risk_grid
 
 Live sensor fusion is not required for this launch.
 """
@@ -23,7 +23,7 @@ def generate_launch_description():
     pkg_share = get_package_share_directory("rviz_visualization")
     rviz_config = os.path.join(pkg_share, "rviz", "tank_recon_map.rviz")
     config_file = os.path.join(pkg_share, "config", "static_map_costs.yaml")
-    recon_map_file = os.path.join(pkg_share, "map", "recon_map.map")
+    recon_map_file = os.path.join(pkg_share, "map", "finalmap.map")
 
     return LaunchDescription(
         [

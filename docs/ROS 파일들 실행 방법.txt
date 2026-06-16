@@ -35,7 +35,7 @@ http://Ubuntu_IP:5000/debug/yolo
 TANK_ALLOWED_CLIENTS=127.0.0.1,::1,192.168.0.?? TANK_MODE=monitor TANK_LIVE_VIEW=true TANK_YOLO_ASYNC=false ros2 run ros_bridge ros_bridge
 
 2) 웹 live view ON + async YOLO production /detect 사용:
-TANK_ALLOWED_CLIENTS=127.0.0.1,::1,192.168.0.?? TANK_MODE=monitor TANK_LIVE_VIEW=true TANK_YOLO_ASYNC=true TANK_YOLO_ASYNC_MAX_RESULT_AGE_MS=300 ros2 run ros_bridge ros_bridge
+TANK_ALLOWED_CLIENTS=127.0.0.1,::1,192.168.0.?? TANK_MODE=monitor TANK_LIVE_VIEW=true TANK_YOLO_ASYNC=true TANK_YOLO_ASYNC_MAX_RESULT_AGE_MS=250 ros2 run ros_bridge ros_bridge
 
 3) 웹 live view OFF:
 TANK_ALLOWED_CLIENTS=127.0.0.1,::1,192.168.0.?? TANK_MODE=monitor TANK_LIVE_VIEW=false TANK_YOLO_ASYNC=false ros2 run ros_bridge ros_bridge
@@ -89,7 +89,7 @@ ls -lh ~/tank_discovered_maps
 TANK_ALLOWED_CLIENTS=127.0.0.1,::1,192.168.0.?? TANK_MODE=auto TANK_LIVE_VIEW=true TANK_YOLO_ASYNC=false ros2 run ros_bridge ros_bridge
 
 2) 웹 live view ON + async YOLO production /detect 사용:
-TANK_ALLOWED_CLIENTS=127.0.0.1,::1,192.168.0.?? TANK_MODE=auto TANK_LIVE_VIEW=true TANK_YOLO_ASYNC=true TANK_YOLO_ASYNC_MAX_RESULT_AGE_MS=300 ros2 run ros_bridge ros_bridge
+TANK_ALLOWED_CLIENTS=127.0.0.1,::1,192.168.0.?? TANK_MODE=auto TANK_LIVE_VIEW=true TANK_YOLO_ASYNC=true TANK_YOLO_ASYNC_MAX_RESULT_AGE_MS=250 ros2 run ros_bridge ros_bridge
 
 웹 확인:
 http://Ubuntu_IP:5000/view
@@ -145,9 +145,9 @@ TANK_YOLO_ASYNC=true
 - YOLO 때문에 simulator loop가 느려질 때 사용
 - 단, 현재 LiDAR와 직전 YOLO bbox가 섞일 수 있으므로 TANK_YOLO_ASYNC_MAX_RESULT_AGE_MS를 너무 크게 두지 말 것
 
-TANK_YOLO_ASYNC_MAX_RESULT_AGE_MS=300
+TANK_YOLO_ASYNC_MAX_RESULT_AGE_MS=250
 - async detection 결과가 너무 오래되면 local_path_node에서 fusion 제외
-- 기본 추천값: 300
+- 기본 추천값: 250
 
 디버그 확인:
 curl http://127.0.0.1:5000/debug/live_view

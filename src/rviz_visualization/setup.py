@@ -12,7 +12,10 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
         ("share/" + package_name + "/rviz", glob("rviz/*.rviz")),
-        ("share/" + package_name + "/map", glob("map/*.map")),
+        (
+            "share/" + package_name + "/map",
+            glob("map/*.map") + glob("map/*.png") + glob("map/*.jpg") + glob("map/*.jpeg"),
+        ),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
     ],
     install_requires=["setuptools"],

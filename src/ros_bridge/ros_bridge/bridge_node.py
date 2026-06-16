@@ -401,6 +401,29 @@ class RosBridge(Node):
             # 외부에서 받은 값을 deepcopy해서 최신 상태 저장소에 반영한다.
             self._latest[key] = deepcopy(value)
 
+    def get_latest_snapshot(self) -> Dict[str, Any]:
+        """Return a JSON-friendly copy of the bridge state for dashboard views."""
+        now = now_wall()
+        with self._lock:
+            latest_command_age = None
+            if self._latest_command_stamp is not None:
+                latest_command_age = now - self._latest_command_stamp
+            return {
+                "available": True,
+                "timestampWall": now,
+                "mode": TANK_MODE,
+                "routeCounts": deepcopy(self._route_counts),
+                "route_counts": deepcopy(self._route_counts),
+                "latest": deepcopy(self._latest),
+                "latestCommand": deepcopy(self._latest_command),
+                "latestCommandAgeSec": latest_command_age,
+                "hasOneShotOverride": self._one_shot_override is not None,
+                "coordinatePolicy": {
+                    "raw": "Unity API x,y,z",
+                    "map": "x=raw.x, y=raw.z, z=raw.y",
+                },
+            }
+
     # --------------------------------------------------------
     # Command callbacks
     # --------------------------------------------------------

@@ -3,7 +3,7 @@
 Launch RViz with both the reconnaissance map and the actual mission map.
 
 Use this for explanation/validation mode:
-- recon_map.map    = pre-known drone reconnaissance layer
+- finalmap.map     = pre-known drone reconnaissance layer
 - mission_map.map  = actual mission / ground-truth layer
 - diff markers     = objects present only in one map
 
@@ -22,7 +22,7 @@ def generate_launch_description():
     pkg_share = get_package_share_directory("rviz_visualization")
     rviz_config = os.path.join(pkg_share, "rviz", "tank_recon_mission_map.rviz")
     config_file = os.path.join(pkg_share, "config", "static_map_costs.yaml")
-    recon_map_file = os.path.join(pkg_share, "map", "recon_map.map")
+    recon_map_file = os.path.join(pkg_share, "map", "finalmap.map")
     mission_map_file = os.path.join(pkg_share, "map", "mission_map.map")
 
     return LaunchDescription(

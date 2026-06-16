@@ -103,6 +103,12 @@ def resolve_default_model_path(config: Dict[str, Any]) -> Path:
         return share_path
 
     source_path = _resolve_source_file("models", default_filename)
+    if source_path.exists():
+        return source_path
+    if source_path.suffix.lower() in {".engine", ".onnx"}:
+        pt_fallback = source_path.with_suffix(".pt")
+        if pt_fallback.exists():
+            return pt_fallback
     return source_path
 
 
@@ -133,17 +139,15 @@ class YoloRuntimeConfig:
     enable_cache: bool = True
     min_interval_sec: float = 0.12
     warmup_runs: int = 2
-    aliases: Dict[str, str] = field(default_factory=lambda: {"blue": "person", "red": "person", "tank": "tank", "Tank": "tank"})
-    canonical_classes: set = field(default_factory=lambda: {"rock", "person", "tank", "tent"})
-    ignored_classes: set = field(default_factory=lambda: {"car", "wall"})
-    class_fixed_ids: Dict[str, int] = field(default_factory=lambda: {"tank": 1, "rock": 2, "person": 3, "tent": 4})
+    aliases: Dict[str, str] = field(default_factory=lambda: {"blue": "person", "red": "person", "tank": "tank", "Tank": "tank", "car": "car", "house": "house"})
+    canonical_classes: set = field(default_factory=lambda: {"rock", "person", "tank", "car", "house"})
+    canonical_class_order: List[str] = field(default_factory=lambda: ["rock", "person", "tank", "car", "house"])
+    ignored_classes: set = field(default_factory=set)
+    class_fixed_ids: Dict[str, int] = field(default_factory=lambda: {"tank": 1, "rock": 2, "person": 3, "car": 4, "house": 5})
     class_colors: Dict[str, str] = field(default_factory=lambda: dict(DEFAULT_CLASS_COLORS))
     default_box_color: str = "#00FF00"
     default_confidence: float = 0.20
-    class_confidence_thresholds: Dict[str, float] = field(default_factory=lambda: {"wall": 0.15})
-    close_wall_confidence: float = 0.12
-    close_wall_area_ratio: float = 0.08
-    close_wall_min_height_ratio: float = 0.35
+    class_confidence_thresholds: Dict[str, float] = field(default_factory=dict)
     shadow_filter_enabled: bool = False
     shadow_sigma: float = 35.0
     shadow_strength: float = 0.75
@@ -170,16 +174,18 @@ class YoloRuntimeConfig:
 
         colors = dict(DEFAULT_CLASS_COLORS)
         colors.update(dict(_deep_get(raw, ["classes", "colors"], {}) or {}))
-        aliases = dict(_deep_get(raw, ["classes", "aliases"], {}) or {"blue": "person", "red": "person", "tank": "tank", "Tank": "tank"})
-        canonical = set(str(x).strip().lower() for x in (_deep_get(raw, ["classes", "canonical"], ["rock", "person", "tank", "tent"]) or []))
-        ignored = set(str(x).strip().lower() for x in (_deep_get(raw, ["classes", "ignored"], ["car", "wall"]) or []))
-        fixed_ids_raw = dict(_deep_get(raw, ["classes", "fixed_ids"], {}) or {"tank": 1, "rock": 2, "person": 3, "tent": 4})
+        aliases = dict(_deep_get(raw, ["classes", "aliases"], {}) or {"blue": "person", "red": "person", "tank": "tank", "Tank": "tank", "car": "car", "house": "house"})
+        canonical_order = [
+            str(x).strip().lower()
+            for x in (_deep_get(raw, ["classes", "canonical"], ["rock", "person", "tank", "car", "house"]) or [])
+            if str(x).strip()
+        ]
+        canonical = set(canonical_order)
+        ignored = set(str(x).strip().lower() for x in (_deep_get(raw, ["classes", "ignored"], []) or []))
+        fixed_ids_raw = dict(_deep_get(raw, ["classes", "fixed_ids"], {}) or {"tank": 1, "rock": 2, "person": 3, "car": 4, "house": 5})
         fixed_ids = {str(k).strip().lower(): int(v) for k, v in fixed_ids_raw.items()}
 
         thresholds = dict(_deep_get(raw, ["classes", "confidence_thresholds"], {}) or {})
-        if "wall" not in thresholds:
-            thresholds["wall"] = 0.15
-
         return cls(
             model_path=model_path,
             config_path=config_path,
@@ -202,15 +208,13 @@ class YoloRuntimeConfig:
             warmup_runs=int(os.getenv("YOLO_WARMUP_RUNS", _deep_get(raw, ["model", "warmup_runs"], 2))),
             aliases=aliases,
             canonical_classes=canonical,
+            canonical_class_order=canonical_order,
             ignored_classes=ignored,
             class_fixed_ids=fixed_ids,
             class_colors=colors,
             default_box_color=str(_deep_get(raw, ["classes", "default_box_color"], "#00FF00")),
             default_confidence=float(os.getenv("YOLO_DEFAULT_CONF", _deep_get(raw, ["classes", "default_confidence"], 0.20))),
             class_confidence_thresholds={k: float(v) for k, v in thresholds.items()},
-            close_wall_confidence=float(os.getenv("YOLO_CLOSE_WALL_CONF", _deep_get(raw, ["classes", "close_wall", "confidence"], 0.12))),
-            close_wall_area_ratio=float(os.getenv("YOLO_CLOSE_WALL_AREA_RATIO", _deep_get(raw, ["classes", "close_wall", "area_ratio"], 0.08))),
-            close_wall_min_height_ratio=float(os.getenv("YOLO_CLOSE_WALL_MIN_HEIGHT_RATIO", _deep_get(raw, ["classes", "close_wall", "min_height_ratio"], 0.35))),
             shadow_filter_enabled=_env_flag("YOLO_SHADOW_FILTER", bool(_deep_get(raw, ["preprocess", "shadow_filter_enabled"], False))),
             shadow_sigma=float(os.getenv("YOLO_SHADOW_SIGMA", _deep_get(raw, ["preprocess", "shadow_sigma"], 35.0))),
             shadow_strength=float(os.getenv("YOLO_SHADOW_STRENGTH", _deep_get(raw, ["preprocess", "shadow_strength"], 0.75))),
@@ -275,14 +279,21 @@ class TankYoloDetector:
             return
 
         try:
-            self._model = YOLO(str(self.config.model_path))
+            self._model = YOLO(str(self.config.model_path), task="detect")
             self._model_names = normalize_model_names(self._model.names)
             self._public_names = {
                 class_id: self.normalize_public_class_name(name)
                 for class_id, name in self._model_names.items()
             }
             if self.config.use_cuda:
-                torch.backends.cudnn.benchmark = _env_flag("YOLO_CUDNN_BENCHMARK", False)
+                torch.backends.cudnn.benchmark = _env_flag("YOLO_CUDNN_BENCHMARK", True)
+                tf32_enabled = _env_flag("YOLO_TF32", True)
+                torch.backends.cuda.matmul.allow_tf32 = tf32_enabled
+                torch.backends.cudnn.allow_tf32 = tf32_enabled
+                try:
+                    torch.set_float32_matmul_precision("high")
+                except Exception:
+                    pass
                 warmup_image = np.zeros((max(32, self.config.imgsz), max(32, self.config.imgsz), 3), dtype=np.uint8)
                 warmup_image, _, _ = self.preprocess_frame(warmup_image)
                 for _ in range(max(1, self.config.warmup_runs)):
@@ -304,7 +315,7 @@ class TankYoloDetector:
             print(
                 "[vision] YOLO loaded: "
                 f"model={self.config.model_path}, labels={self._model_names}, public={self._public_names}, "
-                f"device={self.config.device}, half={self.config.half}, imgsz={self.config.imgsz}, "
+                f"backend={self.runtime_backend()}, device={self.config.device}, half={self.config.half}, imgsz={self.config.imgsz}, "
                 f"tracking={self.config.tracking_enabled}, tracker={self.config.tracker}, persist={self.config.track_persist}"
             )
         except Exception as exc:
@@ -328,6 +339,16 @@ class TankYoloDetector:
 
     def get_box_color(self, class_name: str) -> str:
         return self.config.class_colors.get(str(class_name).strip().lower(), self.config.default_box_color)
+
+    def runtime_backend(self) -> str:
+        suffix = self.config.model_path.suffix.lower()
+        if suffix == ".engine":
+            return "tensorrt"
+        if suffix == ".onnx":
+            return "onnx"
+        if suffix == ".pt":
+            return "pytorch"
+        return suffix.lstrip(".") or "unknown"
 
     def decode_image_bytes(self, image_bytes: bytes) -> Optional[np.ndarray]:
         if not image_bytes:
@@ -402,20 +423,6 @@ class TankYoloDetector:
         x1, y1, x2, y2 = (float(value) for value in box[:4])
         return x2 > x1 and y2 > y1
 
-    def get_box_size_ratios(self, box: Any, frame_shape: Tuple[int, ...]) -> Tuple[float, float]:
-        frame_height, frame_width = frame_shape[:2]
-        x1, y1, x2, y2 = box[:4]
-        box_width = max(0.0, float(x2 - x1))
-        box_height = max(0.0, float(y2 - y1))
-        frame_area = max(1.0, float(frame_width * frame_height))
-        return (box_width * box_height) / frame_area, box_height / max(1.0, float(frame_height))
-
-    def is_close_wall_candidate(self, class_name: str, confidence: float, box: Any, frame_shape: Tuple[int, ...]) -> bool:
-        if class_name != "wall" or confidence < self.config.close_wall_confidence:
-            return False
-        area_ratio, height_ratio = self.get_box_size_ratios(box, frame_shape)
-        return area_ratio >= self.config.close_wall_area_ratio or height_ratio >= self.config.close_wall_min_height_ratio
-
     def evaluate_detection_for_return(self, class_name: Optional[str], confidence: float, box: Any, frame_shape: Tuple[int, ...], bypass: bool) -> Tuple[bool, Optional[str], Optional[float]]:
         if class_name is None:
             return False, "class_name_none", None
@@ -427,8 +434,6 @@ class TankYoloDetector:
             return False, "non_canonical_class", None
         if bypass:
             return True, None, None
-        if self.is_close_wall_candidate(class_name, confidence, box, frame_shape):
-            return True, None, self.config.close_wall_confidence
         threshold = self.config.class_confidence_thresholds.get(class_name, self.config.default_confidence)
         if confidence >= threshold:
             return True, None, threshold
@@ -693,11 +698,13 @@ class TankYoloDetector:
             "loaded": state.get("loaded"),
             "loadError": state.get("load_error"),
             "modelPath": str(self.config.model_path),
+            "runtimeBackend": self.runtime_backend(),
+            "tensorRtEnabled": self.runtime_backend() == "tensorrt",
             "configPath": str(self.config.config_path) if self.config.config_path else None,
             "modelNames": self._model_names,
             "publicNames": self._public_names,
             "classColors": self.config.class_colors,
-            "canonicalClasses": sorted(self.config.canonical_classes),
+            "canonicalClasses": list(self.config.canonical_class_order),
             "ignoredClasses": sorted(self.config.ignored_classes),
             "classFixedIds": self.config.class_fixed_ids,
             "trackingEnabled": self.config.tracking_enabled,

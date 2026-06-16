@@ -259,7 +259,7 @@ def smooth_path(grid: list[list[int]], path: list[tuple[int, int]]) -> list[tupl
     return smoothed
 
 def load_static_obstacles_from_map(map_path: str) -> list[dict]:
-    """맵 파일에서 고정된 지형지물(Tree, Rock, Wall 등) 위치를 읽어 bbox 형태로 반환합니다."""
+    """맵 파일에서 고정된 지형지물(Tree, Rock 등) 위치를 읽어 bbox 형태로 반환합니다."""
     try:
         with open(map_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -282,10 +282,6 @@ def load_static_obstacles_from_map(map_path: str) -> list[dict]:
         if 'Rock' in prefab:
             radius = 4.0
             obs_type = 'Rock'
-        elif 'Wall' in prefab:
-            radius = 2.0
-            obs_type = 'Wall'
-            
         obstacles.append({
             'type': obs_type,
             'x_min': x - radius,
