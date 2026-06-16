@@ -80,6 +80,7 @@ from .config import (
     LIVE_VIEW_ENABLED,
     LIVE_VIEW_FPS,
     LIVE_VIEW_JPEG_QUALITY,
+    PUBLISH_DETECT_IMAGE,
     PORT,
     SAVE_IMAGES,
     TANK_MODE,
@@ -87,6 +88,7 @@ from .config import (
     YOLO_ASYNC_LOG_INTERVAL_SEC,
     YOLO_ASYNC_MAX_RESULT_AGE_MS,
     YOLO_ASYNC_MIN_INTERVAL_SEC,
+    YOLO_ASYNC_WAIT_FOR_FRESH_MS,
 )
 
 # get_bridge:
@@ -116,9 +118,10 @@ from .utils import compact_info, now_wall, pretty, raw_and_map_pose
 # ultralytics/torch가 설치되어 있지 않아도 bridge 자체가 죽지 않도록
 # 실제 detector 생성은 /detect 요청 시 lazy-loading으로 수행한다.
 try:
-    from vision.yolo_detector import get_detector
+    from vision.yolo_detector import get_detector, peek_detector
 except Exception as exc:  # pragma: no cover - runtime dependency fallback
     get_detector = None
+    peek_detector = None
     _YOLO_IMPORT_ERROR = exc
 else:
     _YOLO_IMPORT_ERROR = None
@@ -137,6 +140,7 @@ def _get_async_yolo_service():
             get_detector,
             min_interval_sec=YOLO_ASYNC_MIN_INTERVAL_SEC,
             max_result_age_ms=YOLO_ASYNC_MAX_RESULT_AGE_MS,
+            wait_for_fresh_ms=YOLO_ASYNC_WAIT_FOR_FRESH_MS,
             log_interval_sec=YOLO_ASYNC_LOG_INTERVAL_SEC,
         )
     return _ASYNC_YOLO_SERVICE
@@ -900,11 +904,11 @@ def route_detect():
             frame_shape = None
 
     bridge = get_bridge()
-    if bridge:
+    if bridge and PUBLISH_DETECT_IMAGE:
         bridge.handle_detect_image(image_bytes, metadata={"route": "/detect"})
 
     detections = []
-    metadata = {}
+    metadata = {"ros_image_published": bool(PUBLISH_DETECT_IMAGE)}
     if isinstance(frame_shape, list) and len(frame_shape) >= 2:
         metadata["image_shape"] = frame_shape
         metadata["image"] = {"height": frame_shape[0], "width": frame_shape[1]}
@@ -924,9 +928,12 @@ def route_detect():
             metadata["yolo_error"] = str(exc)
 
     # Add detector debug metadata when available. In async mode, the frame shape above is preferred.
+    detector_for_debug = None
     if get_detector is not None:
+        detector_for_debug = peek_detector() if YOLO_ASYNC_ENABLED and peek_detector is not None else get_detector()
+    if detector_for_debug is not None:
         try:
-            debug = get_detector().debug_state()
+            debug = detector_for_debug.debug_state()
             debug_shape = debug.get("latestFrameShape")
             if "image_shape" not in metadata and isinstance(debug_shape, list) and len(debug_shape) >= 2:
                 metadata["image_shape"] = debug_shape
@@ -1009,7 +1016,11 @@ def route_dashboard_state():
         if get_detector is None:
             payload["yolo"] = {"loaded": False, "importError": str(_YOLO_IMPORT_ERROR)}
         else:
-            payload["yolo"] = get_detector().debug_state()
+            detector_for_debug = peek_detector() if YOLO_ASYNC_ENABLED and peek_detector is not None else get_detector()
+            if detector_for_debug is None:
+                payload["yolo"] = {"loaded": False, "pendingAsyncLoad": True}
+            else:
+                payload["yolo"] = detector_for_debug.debug_state()
     except Exception as exc:  # noqa: BLE001
         payload["yolo"] = {"loaded": False, "error": str(exc)}
 

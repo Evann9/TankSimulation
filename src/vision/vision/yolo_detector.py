@@ -149,6 +149,8 @@ class YoloRuntimeConfig:
     default_confidence: float = 0.5
     class_confidence_thresholds: Dict[str, float] = field(default_factory=dict)
     shadow_filter_enabled: bool = False
+    jpeg_reduced_decode: bool = True
+    jpeg_decode_max_side: int = 960
     shadow_sigma: float = 35.0
     shadow_strength: float = 0.75
     shadow_work_scale: float = 0.35
@@ -215,6 +217,8 @@ class YoloRuntimeConfig:
             default_box_color=str(_deep_get(raw, ["classes", "default_box_color"], "#00FF00")),
             default_confidence=float(os.getenv("YOLO_DEFAULT_CONF", _deep_get(raw, ["classes", "default_confidence"], 0.5))),
             class_confidence_thresholds={k: float(v) for k, v in thresholds.items()},
+            jpeg_reduced_decode=_env_flag("YOLO_JPEG_REDUCED_DECODE", bool(_deep_get(raw, ["preprocess", "jpeg_reduced_decode"], True))),
+            jpeg_decode_max_side=int(os.getenv("YOLO_JPEG_DECODE_MAX_SIDE", _deep_get(raw, ["preprocess", "jpeg_decode_max_side"], 960))),
             shadow_filter_enabled=_env_flag("YOLO_SHADOW_FILTER", bool(_deep_get(raw, ["preprocess", "shadow_filter_enabled"], False))),
             shadow_sigma=float(os.getenv("YOLO_SHADOW_SIGMA", _deep_get(raw, ["preprocess", "shadow_sigma"], 35.0))),
             shadow_strength=float(os.getenv("YOLO_SHADOW_STRENGTH", _deep_get(raw, ["preprocess", "shadow_strength"], 0.75))),
@@ -228,6 +232,17 @@ class YoloRuntimeConfig:
             recognition_log_empty=_env_flag("YOLO_RECOGNITION_LOG_EMPTY", bool(_deep_get(raw, ["runtime", "recognition_log_empty"], False))),
             debug_detections=_env_flag("YOLO_DETECT_DEBUG", bool(_deep_get(raw, ["runtime", "debug_detections"], False))),
         )
+
+
+@dataclass
+class DecodedFrame:
+    frame: np.ndarray
+    source_shape: Tuple[int, int, int]
+    decoded_shape: Tuple[int, int, int]
+    scale_x: float
+    scale_y: float
+    decode_mode: str
+    reduced_decode: bool
 
 
 class TankYoloDetector:
@@ -257,6 +272,10 @@ class TankYoloDetector:
             "latest_raw_detections": [],
             "latest_rejected_detections": [],
             "latest_frame_shape": None,
+            "latest_decoded_frame_shape": None,
+            "latest_decode_mode": None,
+            "latest_decode_scale": None,
+            "latest_reduced_decode": False,
             "latest_model_conf_used": self.config.model_conf,
             "latest_fallback_used": False,
         }
@@ -350,11 +369,92 @@ class TankYoloDetector:
             return "pytorch"
         return suffix.lstrip(".") or "unknown"
 
-    def decode_image_bytes(self, image_bytes: bytes) -> Optional[np.ndarray]:
+    def _read_jpeg_size(self, image_bytes: bytes) -> Optional[Tuple[int, int]]:
+        if len(image_bytes) < 4 or image_bytes[0] != 0xFF or image_bytes[1] != 0xD8:
+            return None
+        sof_markers = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+        index = 2
+        size = len(image_bytes)
+        while index + 9 < size:
+            if image_bytes[index] != 0xFF:
+                index += 1
+                continue
+            while index < size and image_bytes[index] == 0xFF:
+                index += 1
+            if index >= size:
+                break
+            marker = image_bytes[index]
+            index += 1
+            if marker in {0xD8, 0xD9, 0x01} or 0xD0 <= marker <= 0xD7:
+                continue
+            if index + 2 > size:
+                break
+            segment_length = int.from_bytes(image_bytes[index : index + 2], "big")
+            if segment_length < 2 or index + segment_length > size:
+                break
+            if marker in sof_markers and segment_length >= 7:
+                height = int.from_bytes(image_bytes[index + 3 : index + 5], "big")
+                width = int.from_bytes(image_bytes[index + 5 : index + 7], "big")
+                if width > 0 and height > 0:
+                    return width, height
+                break
+            index += segment_length
+        return None
+
+    def _jpeg_decode_flag(self, width: int, height: int) -> Tuple[int, int, str]:
+        max_side = max(width, height)
+        target = max(1, int(self.config.jpeg_decode_max_side))
+        if not self.config.jpeg_reduced_decode or target <= 0 or max_side <= target:
+            return cv2.IMREAD_COLOR, 1, "full"
+        for factor, flag in (
+            (2, cv2.IMREAD_REDUCED_COLOR_2),
+            (4, cv2.IMREAD_REDUCED_COLOR_4),
+            (8, cv2.IMREAD_REDUCED_COLOR_8),
+        ):
+            reduced_side = max_side / float(factor)
+            if reduced_side <= target and reduced_side >= max(320.0, self.config.imgsz * 0.75):
+                return flag, factor, f"jpeg_reduced_{factor}"
+        return cv2.IMREAD_REDUCED_COLOR_2, 2, "jpeg_reduced_2"
+
+    def decode_image_bytes_with_metadata(self, image_bytes: bytes) -> Optional[DecodedFrame]:
         if not image_bytes:
             return None
+        jpeg_size = self._read_jpeg_size(image_bytes)
+        decode_flag = cv2.IMREAD_COLOR
+        decode_mode = "full"
+        expected_factor = 1
+        if jpeg_size is not None:
+            decode_flag, expected_factor, decode_mode = self._jpeg_decode_flag(*jpeg_size)
         image_buffer = np.frombuffer(image_bytes, dtype=np.uint8)
-        return cv2.imdecode(image_buffer, cv2.IMREAD_COLOR)
+        frame = cv2.imdecode(image_buffer, decode_flag)
+        if frame is None and decode_flag != cv2.IMREAD_COLOR:
+            frame = cv2.imdecode(image_buffer, cv2.IMREAD_COLOR)
+            decode_mode = "full_fallback"
+            expected_factor = 1
+        if frame is None:
+            return None
+
+        decoded_height, decoded_width = frame.shape[:2]
+        if jpeg_size is None:
+            source_width, source_height = decoded_width, decoded_height
+        else:
+            source_width, source_height = jpeg_size
+        scale_x = source_width / float(max(1, decoded_width))
+        scale_y = source_height / float(max(1, decoded_height))
+        reduced_decode = expected_factor > 1 and (scale_x > 1.01 or scale_y > 1.01)
+        return DecodedFrame(
+            frame=frame,
+            source_shape=(int(source_height), int(source_width), int(frame.shape[2] if frame.ndim >= 3 else 1)),
+            decoded_shape=(int(decoded_height), int(decoded_width), int(frame.shape[2] if frame.ndim >= 3 else 1)),
+            scale_x=scale_x,
+            scale_y=scale_y,
+            decode_mode=decode_mode,
+            reduced_decode=reduced_decode,
+        )
+
+    def decode_image_bytes(self, image_bytes: bytes) -> Optional[np.ndarray]:
+        decoded = self.decode_image_bytes_with_metadata(image_bytes)
+        return None if decoded is None else decoded.frame
 
     def _clamp_float(self, value: float, lower: float, upper: float) -> float:
         return max(lower, min(upper, value))
@@ -554,12 +654,12 @@ class TankYoloDetector:
             bbox_text = ", ".join(f"{float(coord):.1f}" for coord in bbox[:4])
             print(f"[detect] class={det.get('className')} conf={float(det.get('confidence', 0.0)):.2f} bbox=[{bbox_text}]")
 
-    def detect_bytes(self, image_bytes: bytes) -> List[Dict[str, Any]]:
+    def detect_bytes(self, image_bytes: bytes, *, allow_cache: bool = True) -> List[Dict[str, Any]]:
         started_at = time.perf_counter()
         if not self.loaded or self._model is None:
             return []
 
-        cached = self._get_cached(time.time())
+        cached = self._get_cached(time.time()) if allow_cache else None
         if cached is not None:
             detections, ts = cached
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
@@ -590,15 +690,19 @@ class TankYoloDetector:
 
         try:
             decode_started = time.perf_counter()
-            frame = self.decode_image_bytes(image_bytes)
+            decoded = self.decode_image_bytes_with_metadata(image_bytes)
             decode_ms = (time.perf_counter() - decode_started) * 1000.0
-            if frame is None:
+            if decoded is None:
                 return []
-            original_shape = frame.shape
+            frame = decoded.frame
+            original_shape = decoded.source_shape
             frame_shape_list = [int(value) for value in original_shape]
+            decoded_shape_list = [int(value) for value in decoded.decoded_shape]
 
             preprocess_started = time.perf_counter()
-            processed_frame, scale_x, scale_y = self.preprocess_frame(frame)
+            processed_frame, preprocess_scale_x, preprocess_scale_y = self.preprocess_frame(frame)
+            scale_x = decoded.scale_x * preprocess_scale_x
+            scale_y = decoded.scale_y * preprocess_scale_y
             preprocess_ms = (time.perf_counter() - preprocess_started) * 1000.0
 
             yolo_started = time.perf_counter()
@@ -672,6 +776,10 @@ class TankYoloDetector:
             latest_raw_detections=raw_debug[:10],
             latest_rejected_detections=rejected[:10],
             latest_frame_shape=frame_shape_list,
+            latest_decoded_frame_shape=decoded_shape_list,
+            latest_decode_mode=decoded.decode_mode,
+            latest_decode_scale={"x": decoded.scale_x, "y": decoded.scale_y},
+            latest_reduced_decode=decoded.reduced_decode,
             latest_model_conf_used=model_conf_used,
             latest_fallback_used=fallback_used,
         )
@@ -681,7 +789,7 @@ class TankYoloDetector:
                 "[perf:/detect] "
                 f"decode={decode_ms:.1f}ms preprocess={preprocess_ms:.1f}ms "
                 f"yolo={yolo_ms:.1f}ms post={post_ms:.1f}ms total={elapsed_ms:.1f}ms "
-                f"raw={len(raw_debug)} returned={len(filtered)}"
+                f"raw={len(raw_debug)} returned={len(filtered)} decode_mode={decoded.decode_mode}"
             )
         if self.config.debug_detections:
             print("[detect] raw:", raw_debug)
@@ -731,8 +839,16 @@ class TankYoloDetector:
             "latestRawDetections": state.get("latest_raw_detections"),
             "latestRejectedDetections": state.get("latest_rejected_detections"),
             "latestFrameShape": state.get("latest_frame_shape"),
+            "latestDecodedFrameShape": state.get("latest_decoded_frame_shape"),
+            "latestDecodeMode": state.get("latest_decode_mode"),
+            "latestDecodeScale": state.get("latest_decode_scale"),
+            "latestReducedDecode": state.get("latest_reduced_decode"),
+            "latestModelConfUsed": state.get("latest_model_conf_used"),
+            "latestFallbackUsed": state.get("latest_fallback_used"),
             "latestDetectCached": state.get("latest_detect_cached"),
             "latestCacheReason": state.get("latest_cache_reason"),
+            "jpegReducedDecode": self.config.jpeg_reduced_decode,
+            "jpegDecodeMaxSide": self.config.jpeg_decode_max_side,
             "cudaAvailable": torch.cuda.is_available(),
             "cudaDeviceName": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         }
@@ -748,3 +864,8 @@ def get_detector() -> TankYoloDetector:
         if _DETECTOR_SINGLETON is None:
             _DETECTOR_SINGLETON = TankYoloDetector()
         return _DETECTOR_SINGLETON
+
+
+def peek_detector() -> Optional[TankYoloDetector]:
+    """Return the loaded detector singleton without triggering model loading."""
+    return _DETECTOR_SINGLETON

@@ -65,6 +65,8 @@ bbox_distance:
   publish_metadata: false
 
 preprocess:
+  jpeg_reduced_decode: true
+  jpeg_decode_max_side: 960
   shadow_filter_enabled: false
   shadow_sigma: 35.0
   shadow_strength: 0.75

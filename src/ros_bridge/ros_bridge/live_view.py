@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 import os
 from copy import deepcopy
-from threading import Lock
+from threading import Condition, Lock, Thread
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -22,6 +22,7 @@ except Exception:  # pragma: no cover - runtime optional guard
     cv2 = None
 
 _state_lock = Lock()
+_frame_condition = Condition(_state_lock)
 _latest_frame: Optional[np.ndarray] = None
 _latest_frame_seq = 0
 _latest_frame_timestamp = 0.0
@@ -33,10 +34,15 @@ _latest_detection_timestamp = 0.0
 _latest_error: Optional[str] = None
 _latest_live_decode_ms = 0.0
 _skipped_live_decode_count = 0
+_pending_frame_bytes: Optional[bytes] = None
+_pending_frame_seq = 0
+_decoded_input_frame_seq = 0
+_decode_thread: Optional[Thread] = None
+_live_decode_worker_count = 0
 
-_LIVE_VIEW_DECODE_FPS = float(os.getenv("TANK_LIVE_VIEW_DECODE_FPS", "6"))
+_LIVE_VIEW_DECODE_FPS = float(os.getenv("TANK_LIVE_VIEW_DECODE_FPS", "4"))
 _LIVE_VIEW_DECODE_INTERVAL = 1.0 / max(0.1, _LIVE_VIEW_DECODE_FPS)
-_LIVE_VIEW_MAX_SIDE = int(os.getenv("TANK_LIVE_VIEW_MAX_SIDE", "960"))
+_LIVE_VIEW_MAX_SIDE = int(os.getenv("TANK_LIVE_VIEW_MAX_SIDE", "900"))
 
 _CLASS_COLORS_BGR = {
     "tank": (0, 0, 255),
@@ -75,33 +81,80 @@ def _resize_for_live_view(frame: np.ndarray) -> np.ndarray:
     return cv2.resize(frame, resized_size, interpolation=cv2.INTER_AREA)
 
 
+def _ensure_decode_worker_locked() -> None:
+    global _decode_thread
+    if _decode_thread is not None and _decode_thread.is_alive():
+        return
+    _decode_thread = Thread(target=_decode_worker_loop, daemon=True, name="LiveViewDecodeWorker")
+    _decode_thread.start()
+
+
+def _decode_worker_loop() -> None:
+    global _latest_frame, _latest_frame_seq, _latest_frame_timestamp, _latest_frame_shape
+    global _latest_source_frame_shape, _latest_error, _latest_live_decode_ms
+    global _decoded_input_frame_seq, _live_decode_worker_count
+
+    print("[live_view] decode worker started")
+    while True:
+        with _frame_condition:
+            _frame_condition.wait_for(lambda: _pending_frame_seq > _decoded_input_frame_seq)
+            image_bytes = _pending_frame_bytes
+            seq_to_decode = _pending_frame_seq
+
+        if not image_bytes:
+            time.sleep(0.01)
+            continue
+
+        with _frame_condition:
+            wait_sec = _LIVE_VIEW_DECODE_INTERVAL - (time.time() - _latest_frame_timestamp) if _latest_frame_timestamp else 0.0
+        if wait_sec > 0:
+            time.sleep(wait_sec)
+            with _frame_condition:
+                if _pending_frame_seq > seq_to_decode:
+                    image_bytes = _pending_frame_bytes
+                    seq_to_decode = _pending_frame_seq
+
+        decode_started = time.perf_counter()
+        frame = _decode_jpeg(image_bytes)
+        decode_ms = (time.perf_counter() - decode_started) * 1000.0
+        if frame is None:
+            with _frame_condition:
+                _latest_error = "live_view: failed to decode frame or cv2 unavailable"
+                _decoded_input_frame_seq = max(_decoded_input_frame_seq, seq_to_decode)
+                _frame_condition.notify_all()
+            continue
+
+        source_shape = [int(v) for v in frame.shape]
+        display_frame = _resize_for_live_view(frame)
+        display_shape = [int(v) for v in display_frame.shape]
+        with _frame_condition:
+            _latest_frame = display_frame
+            _latest_frame_seq += 1
+            _latest_frame_timestamp = time.time()
+            _latest_frame_shape = display_shape
+            _latest_source_frame_shape = source_shape
+            _latest_live_decode_ms = decode_ms
+            _latest_error = None
+            _decoded_input_frame_seq = max(_decoded_input_frame_seq, seq_to_decode)
+            _live_decode_worker_count += 1
+            _frame_condition.notify_all()
+
+
 def update_frame(image_bytes: bytes) -> Optional[List[int]]:
-    """Store a throttled display frame. Returns source frame shape [h, w, c] if known."""
-    global _latest_frame, _latest_frame_seq, _latest_frame_timestamp, _latest_frame_shape, _latest_source_frame_shape, _latest_error, _latest_live_decode_ms, _skipped_live_decode_count
-    now = time.time()
-    with _state_lock:
-        if _latest_frame_timestamp and now - _latest_frame_timestamp < _LIVE_VIEW_DECODE_INTERVAL:
+    """Queue a display frame for background decode. Returns the last known source shape."""
+    global _pending_frame_bytes, _pending_frame_seq, _skipped_live_decode_count, _latest_error
+    if cv2 is None or not image_bytes:
+        with _frame_condition:
+            _latest_error = "live_view: cv2 unavailable or empty frame"
+            return None
+    with _frame_condition:
+        if _pending_frame_seq > _decoded_input_frame_seq:
             _skipped_live_decode_count += 1
-            return deepcopy(_latest_source_frame_shape or _latest_frame_shape)
-    decode_started = time.perf_counter()
-    frame = _decode_jpeg(image_bytes)
-    decode_ms = (time.perf_counter() - decode_started) * 1000.0
-    if frame is None:
-        with _state_lock:
-            _latest_error = "live_view: failed to decode frame or cv2 unavailable"
-        return None
-    source_shape = [int(v) for v in frame.shape]
-    display_frame = _resize_for_live_view(frame)
-    display_shape = [int(v) for v in display_frame.shape]
-    with _state_lock:
-        _latest_frame = display_frame
-        _latest_frame_seq += 1
-        _latest_frame_timestamp = time.time()
-        _latest_frame_shape = display_shape
-        _latest_source_frame_shape = source_shape
-        _latest_live_decode_ms = decode_ms
-        _latest_error = None
-    return source_shape
+        _pending_frame_seq += 1
+        _pending_frame_bytes = image_bytes
+        _ensure_decode_worker_locked()
+        _frame_condition.notify()
+        return deepcopy(_latest_source_frame_shape or _latest_frame_shape)
 
 
 def update_detections(detections: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -118,6 +171,70 @@ def _class_color(class_name: str, class_id: int = 0) -> Tuple[int, int, int]:
     if key in _CLASS_COLORS_BGR:
         return _CLASS_COLORS_BGR[key]
     return _COLOR_PALETTE_BGR[int(class_id) % len(_COLOR_PALETTE_BGR)]
+
+
+def _blend_rect(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int, color: Tuple[int, int, int], alpha: float) -> None:
+    height, width = frame.shape[:2]
+    left = max(0, min(width, x1))
+    right = max(0, min(width, x2))
+    top = max(0, min(height, y1))
+    bottom = max(0, min(height, y2))
+    if right <= left or bottom <= top:
+        return
+    roi = frame[top:bottom, left:right]
+    fill = np.full_like(roi, color, dtype=np.uint8)
+    cv2.addWeighted(fill, alpha, roi, 1.0 - alpha, 0, roi)
+
+
+def _draw_refined_box(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int, color: Tuple[int, int, int]) -> None:
+    height, width = frame.shape[:2]
+    x1 = max(0, min(width - 1, x1))
+    x2 = max(0, min(width - 1, x2))
+    y1 = max(0, min(height - 1, y1))
+    y2 = max(0, min(height - 1, y2))
+    if x2 <= x1 or y2 <= y1:
+        return
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1, cv2.LINE_AA)
+    corner = max(10, min(24, int(min(x2 - x1, y2 - y1) * 0.22)))
+    for start, end in (
+        ((x1, y1), (x1 + corner, y1)),
+        ((x1, y1), (x1, y1 + corner)),
+        ((x2, y1), (x2 - corner, y1)),
+        ((x2, y1), (x2, y1 + corner)),
+        ((x1, y2), (x1 + corner, y2)),
+        ((x1, y2), (x1, y2 - corner)),
+        ((x2, y2), (x2 - corner, y2)),
+        ((x2, y2), (x2, y2 - corner)),
+    ):
+        cv2.line(frame, start, end, color, 1, cv2.LINE_AA)
+
+
+def _draw_refined_label(frame: np.ndarray, label: str, x: int, y: int, color: Tuple[int, int, int]) -> None:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.45
+    thickness = 1
+    padding_x = 6
+    padding_y = 4
+    text_size, baseline = cv2.getTextSize(label, font, font_scale, thickness)
+    text_w, text_h = text_size
+    height, width = frame.shape[:2]
+
+    label_x = max(4, min(width - text_w - padding_x * 2 - 4, x))
+    label_y = y - text_h - baseline - padding_y * 2 - 4
+    if label_y < 4:
+        label_y = min(height - text_h - baseline - padding_y * 2 - 4, y + 6)
+    label_y = max(4, label_y)
+
+    bg_left = label_x
+    bg_top = label_y
+    bg_right = label_x + text_w + padding_x * 2
+    bg_bottom = label_y + text_h + baseline + padding_y * 2
+    _blend_rect(frame, bg_left, bg_top, bg_right, bg_bottom, (4, 8, 6), 0.72)
+    cv2.rectangle(frame, (bg_left, bg_top), (bg_right, bg_bottom), color, 1, cv2.LINE_AA)
+    text_origin = (label_x + padding_x, label_y + padding_y + text_h)
+    shadow_origin = (text_origin[0] + 1, text_origin[1] + 1)
+    cv2.putText(frame, label, shadow_origin, font, font_scale, (12, 18, 14), thickness, cv2.LINE_AA)
+    cv2.putText(frame, label, text_origin, font, font_scale, color, thickness, cv2.LINE_AA)
 
 
 def _draw_detections(frame: np.ndarray, detections: List[Dict[str, Any]], metadata: Dict[str, Any]) -> np.ndarray:
@@ -149,34 +266,15 @@ def _draw_detections(frame: np.ndarray, detections: List[Dict[str, Any]], metada
         fixed_id = det.get("classFixedId", det.get("id"))
         conf = float(det.get("confidence") or 0.0)
         color = _class_color(class_name, class_id)
-        cv2.rectangle(drawn, (x1, y1), (x2, y2), color, 2)
+        _draw_refined_box(drawn, x1, y1, x2, y2, color)
         id_text = ""
         if fixed_id is not None:
             id_text += f" ID:{fixed_id}"
         if track_id is not None:
             id_text += f" T:{track_id}"
         label = f"{class_name}{id_text} {conf:.2f}"
-        cv2.putText(
-            drawn,
-            label,
-            (x1, max(20, y1 - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            color,
-            2,
-            cv2.LINE_AA,
-        )
+        _draw_refined_label(drawn, label, x1, y1, color)
 
-    frame_seq = metadata.get("frameSeq")
-    processed_seq = metadata.get("processedFrameSeq")
-    age_ms = metadata.get("resultAgeMs")
-    async_flag = metadata.get("asyncYolo")
-    status = f"det={len(detections)}"
-    if async_flag:
-        status += f" async frame={frame_seq} yolo={processed_seq} age={age_ms:.0f}ms" if isinstance(age_ms, (int, float)) else f" async frame={frame_seq} yolo={processed_seq}"
-    else:
-        status += " sync"
-    cv2.putText(drawn, status, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2, cv2.LINE_AA)
     return drawn
 
 
@@ -303,6 +401,15 @@ def render_view_page() -> str:
                 color: var(--green);
                 padding: 0 10px;
                 font-size: 12px;
+                font-weight: 800;
+            }
+            .feed-status-text {
+                min-width: 0;
+                max-width: 72%;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                color: var(--cyan);
                 font-weight: 800;
             }
             .left-tabs {
@@ -436,7 +543,7 @@ def render_view_page() -> str:
                     <div id="leftContent" class="scroll"></div>
                 </section>
                 <section class="panel center-panel">
-                    <div class="panel-title"><span>CENTER PANEL</span><span>DRIVE FEED / YOLO BBOX</span></div>
+                    <div class="panel-title"><span>CENTER PANEL</span><span id="feedStatusText" class="feed-status-text">det=0 sync</span></div>
                     <div class="feed-wrap">
                         <img id="driveFeed" src="/video_feed" alt="drive feed">
                     </div>
@@ -1001,6 +1108,30 @@ def render_view_page() -> str:
                 if (Array.isArray(detect?.detections)) return detect.detections;
                 return [];
             }
+            function feedStatusText(state) {
+                const liveView = state?.liveView || {};
+                const metadata = liveView.latestDetectionMetadata || latestBridge(state)?.detect_result || {};
+                const detections = getDetections(state);
+                const count = Number.isFinite(Number(liveView.latestDetectionCount))
+                    ? Number(liveView.latestDetectionCount)
+                    : detections.length;
+                let text = `det=${count}`;
+                if (metadata.asyncYolo) {
+                    const frameSeq = safe(metadata.frameSeq, "-");
+                    const processedSeq = safe(metadata.processedFrameSeq, "-");
+                    const age = Number(metadata.resultAgeMs);
+                    text += Number.isFinite(age)
+                        ? ` async frame=${frameSeq} yolo=${processedSeq} age=${age.toFixed(0)}ms`
+                        : ` async frame=${frameSeq} yolo=${processedSeq}`;
+                } else {
+                    text += liveView.asyncYoloEnabled ? " async waiting" : " sync";
+                }
+                return text;
+            }
+            function updateFeedStatus(state) {
+                const element = byId("feedStatusText");
+                if (element) element.textContent = feedStatusText(state);
+            }
             function renderReadouts(items) {
                 if (!items.length) return '<div class="empty">No data</div>';
                 return `<div class="readout-list">${items.map((item) => `
@@ -1025,6 +1156,7 @@ def render_view_page() -> str:
                 const hasFrame = Number(liveView.latestFrameSeq || 0) > 0;
                 statusValue.textContent = lastFetchOk ? (hasFrame ? "LIVE" : "NO FRAME") : "API ERROR";
                 setStatusClass(statusValue, lastFetchOk ? (hasFrame ? "status-ok" : "status-warn") : "status-error");
+                updateFeedStatus(state);
             }
             function updateLeftPanel(state) {
                 const latest = latestBridge(state);
@@ -1454,6 +1586,10 @@ def debug_state() -> Dict[str, Any]:
             "liveViewMaxSide": _LIVE_VIEW_MAX_SIDE,
             "latestLiveDecodeMs": _latest_live_decode_ms,
             "skippedLiveDecodeCount": _skipped_live_decode_count,
+            "pendingFrameSeq": _pending_frame_seq,
+            "decodedInputFrameSeq": _decoded_input_frame_seq,
+            "liveDecodeWorkerCount": _live_decode_worker_count,
+            "liveDecodeWorkerRunning": _decode_thread is not None and _decode_thread.is_alive(),
             "latestFrameAgeMs": None if frame_age is None else frame_age * 1000.0,
             "latestDetectionCount": len(_latest_detections),
             "latestDetections": deepcopy(_latest_detections[:10]),

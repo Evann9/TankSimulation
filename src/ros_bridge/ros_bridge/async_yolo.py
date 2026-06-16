@@ -20,12 +20,14 @@ class AsyncYoloService:
         detector_factory: Callable[[], Any],
         *,
         min_interval_sec: float = 0.0,
-        max_result_age_ms: float = 300.0,
+        max_result_age_ms: float = 120.0,
+        wait_for_fresh_ms: float = 0.0,
         log_interval_sec: float = 2.0,
     ) -> None:
         self.detector_factory = detector_factory
         self.min_interval_sec = max(0.0, float(min_interval_sec))
         self.max_result_age_ms = max(1.0, float(max_result_age_ms))
+        self.wait_for_fresh_ms = max(0.0, float(wait_for_fresh_ms))
         self.log_interval_sec = max(0.0, float(log_interval_sec))
         self._lock = Lock()
         self._condition = Condition(self._lock)
@@ -57,9 +59,17 @@ class AsyncYoloService:
             self._latest_frame_seq += 1
             frame_seq = self._latest_frame_seq
             self._latest_image_bytes = image_bytes
+            should_wait = self.wait_for_fresh_ms > 0.0 and self._is_result_stale_locked(time.time())
+            self._condition.notify()
+            if should_wait:
+                deadline = time.monotonic() + (self.wait_for_fresh_ms / 1000.0)
+                while self._processed_frame_seq < frame_seq:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(timeout=remaining)
             detections = deepcopy(self._latest_detections)
             metadata = self._metadata_locked(frame_seq=frame_seq)
-            self._condition.notify()
         return detections, metadata
 
     def debug_state(self) -> Dict[str, Any]:
@@ -82,10 +92,16 @@ class AsyncYoloService:
             "asyncWorkerCount": int(self._worker_count),
             "asyncLatestYoloMs": float(self._latest_yolo_ms),
             "asyncMaxResultAgeMs": float(self.max_result_age_ms),
+            "asyncWaitForFreshMs": float(self.wait_for_fresh_ms),
             "asyncDroppedFrameCount": int(self._dropped_frame_count),
             "asyncMinIntervalSec": float(self.min_interval_sec),
             "asyncLatestError": self._latest_error,
         }
+
+    def _is_result_stale_locked(self, now: float) -> bool:
+        if self._latest_result_timestamp <= 0.0:
+            return True
+        return (now - self._latest_result_timestamp) * 1000.0 > self.max_result_age_ms
 
     def _worker_loop(self) -> None:
         print("[ros_bridge] Async YOLO worker started")
@@ -100,19 +116,24 @@ class AsyncYoloService:
                 wait_sec = self.min_interval_sec - (time.time() - self._last_run_time)
                 if wait_sec > 0:
                     time.sleep(wait_sec)
+                with self._condition:
+                    if self._latest_frame_seq > seq_to_process:
+                        image_bytes = self._latest_image_bytes
+                        seq_to_process = self._latest_frame_seq
                 self._last_run_time = time.time()
             started = time.perf_counter()
             try:
                 detector = self.detector_factory()
-                detections = detector.detect_bytes(image_bytes)
+                detections = detector.detect_bytes(image_bytes, allow_cache=False)
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
-                with self._lock:
+                with self._condition:
                     self._processed_frame_seq = int(seq_to_process)
                     self._latest_detections = deepcopy(detections) if isinstance(detections, list) else []
                     self._latest_result_timestamp = time.time()
                     self._latest_yolo_ms = elapsed_ms
                     self._latest_error = None
                     self._worker_count += 1
+                    self._condition.notify_all()
                 now = time.time()
                 if self.log_interval_sec > 0 and now - self._last_log_time >= self.log_interval_sec:
                     self._last_log_time = now
