@@ -517,22 +517,6 @@ def render_view_page() -> str:
                 padding: 10px;
                 font-size: 12px;
             }
-            .map-legend {
-                position: absolute;
-                left: 10px;
-                bottom: 10px;
-                display: flex;
-                gap: 8px;
-                flex-wrap: wrap;
-                color: var(--muted);
-                font-size: 11px;
-                pointer-events: none;
-            }
-            .map-legend span {
-                background: rgba(3, 8, 5, 0.78);
-                border: 1px solid var(--line-dim);
-                padding: 3px 6px;
-            }
             @media (max-width: 980px) {
                 body { overflow: auto; }
                 .mfd { min-height: 100vh; height: auto; grid-template-rows: auto auto auto; }
@@ -582,9 +566,6 @@ def render_view_page() -> str:
                     </div>
                     <div class="map-wrap">
                         <canvas id="mapCanvas"></canvas>
-                        <div id="mapLegend" class="map-legend">
-                            <span>SELF</span><span>ENEMY</span><span>TARGET</span><span>WATER</span><span>RIDGE</span><span>HIGH</span><span>TREE</span><span>ROCK</span><span>HOUSE</span><span>ROUTE</span>
-                        </div>
                     </div>
                 </section>
             </main>
@@ -631,15 +612,7 @@ def render_view_page() -> str:
                 byId("map-tab-terrain").classList.toggle("active", activeMapTab === "terrain");
                 byId("map-tab-ros").classList.toggle("active", activeMapTab === "ros");
                 byId("mapPanelTitle").textContent = activeMapTab === "ros" ? "ROS MAP" : "TERRAIN MAP";
-                updateMapLegend();
                 drawMap(latestState || {});
-            }
-            function updateMapLegend() {
-                const terrain = ["SELF", "ENEMY", "WATER", "RIDGE", "HIGH", "TREE", "ROCK"];
-                const ros = ["SELF", "ENEMY", "TARGET", "OBS", "ROUTE", "YOLO"];
-                byId("mapLegend").innerHTML = (activeMapTab === "ros" ? ros : terrain)
-                    .map((label) => `<span>${label}</span>`)
-                    .join("");
             }
             function latestBridge(state) { return state?.bridge?.latest || {}; }
             function routeCounts(state) { return state?.bridge?.routeCounts || state?.bridge?.route_counts || {}; }
@@ -1074,7 +1047,6 @@ def render_view_page() -> str:
                         }
                     }
                 }
-                let waterLabel = usedTexture ? "texture" : "overview";
                 if (!usedTexture) {
                     drawRockyZones(ctx, mapper, mapData);
                     const hasOverviewWater = terrainZonesOf(mapData, "water").length > 0;
@@ -1083,7 +1055,6 @@ def render_view_page() -> str:
                     } else {
                     const lowWaterLimit = grid.terrain.min + grid.terrain.span * 0.34;
                     const deepWaterLimit = grid.terrain.min + grid.terrain.span * 0.24;
-                    waterLabel = `<=${numberText(lowWaterLimit, 1)}`;
                     for (let row = 0; row < grid.rows; row += 1) {
                         for (let col = 0; col < grid.cols; col += 1) {
                             const h = (
@@ -1111,17 +1082,6 @@ def render_view_page() -> str:
                     drawPassageZones(ctx, mapper, mapData, "terrain");
                     drawContours(ctx, grid, mapper);
                 }
-                ctx.restore();
-
-                ctx.save();
-                ctx.fillStyle = "rgba(216, 255, 233, 0.82)";
-                ctx.font = "11px Consolas, monospace";
-                ctx.textAlign = "left";
-                ctx.fillText(`TOPO MAP objects=${staticObjects.length}`, rect.x + 10, rect.y + 18);
-                ctx.textAlign = "right";
-                ctx.fillText(`elev ${numberText(grid.terrain.min, 1)}..${numberText(grid.terrain.max, 1)}`, rect.x + rect.w - 10, rect.y + 18);
-                ctx.fillStyle = "rgba(68, 217, 255, 0.86)";
-                ctx.fillText(`water ${waterLabel}`, rect.x + rect.w - 10, rect.y + 34);
                 ctx.restore();
                 return true;
             }
@@ -1370,12 +1330,20 @@ def render_view_page() -> str:
                     ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
                     ctx.fill();
                 }
-                ctx.font = "11px Consolas, monospace";
-                ctx.lineWidth = 3;
-                ctx.strokeStyle = "rgba(0, 0, 0, 0.62)";
-                ctx.strokeText(label, point.x + 9, point.y - 9);
-                ctx.fillStyle = color;
-                ctx.fillText(label, point.x + 9, point.y - 9);
+                if (label) {
+                    ctx.font = "10px Consolas, monospace";
+                    const labelX = point.x + 10;
+                    const labelY = point.y - 24;
+                    const labelW = Math.ceil(ctx.measureText(label).width) + 10;
+                    const labelH = 16;
+                    ctx.fillStyle = "rgba(3, 8, 5, 0.72)";
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 1;
+                    ctx.fillRect(labelX, labelY, labelW, labelH);
+                    ctx.strokeRect(labelX + 0.5, labelY + 0.5, labelW - 1, labelH - 1);
+                    ctx.fillStyle = color;
+                    ctx.fillText(label, labelX + 5, labelY + 11);
+                }
                 ctx.restore();
             }
             function drawStaticObject(ctx, point, category) {
@@ -1562,30 +1530,23 @@ def render_view_page() -> str:
                     if (activeMapTab === "ros" && !player && !enemy && !destination && !obstacles.length && !route.length && detectionContacts.length) {
                         const pad = 34;
                         const classColors = { house: "#b084ff", person: "#39ff88", tank: "#ff5b64", rock: "#ffca4f", car: "#ff8c00" };
-                        ctx.fillStyle = "#44d9ff";
-                        ctx.font = "13px Consolas, monospace";
-                        ctx.fillText("YOLO CONTACTS", 18, bridge.error ? (staticPoint ? 92 : 70) : (staticPoint ? 70 : 52));
                         for (const contact of detectionContacts.slice(0, 10)) {
                             const point = {
                                 x: pad + (contact.x / Math.max(1, imageW)) * (w - pad * 2),
                                 y: pad + (contact.y / Math.max(1, imageH)) * (h - pad * 2)
                             };
                             const cls = String(contact.label).toLowerCase();
-                            drawSymbol(ctx, point, classColors[cls] || "#39ff88", `${contact.label} ${numberText(contact.confidence, 2)}`, cls === "house" ? "square" : "circle");
+                            drawSymbol(ctx, point, classColors[cls] || "#39ff88", "", cls === "house" ? "square" : "circle");
                         }
                     }
                     if (activeMapTab === "ros") {
-                        for (const obstacle of obstacles) drawSymbol(ctx, mapPoint(obstacle), "#6aa884", "OBS", "square");
-                        drawSymbol(ctx, destination ? mapPoint(destination) : null, "#ffca4f", "TARGET", "diamond");
+                        for (const obstacle of obstacles) drawSymbol(ctx, mapPoint(obstacle), "#6aa884", "", "square");
+                        drawSymbol(ctx, destination ? mapPoint(destination) : null, "#ffca4f", "", "diamond");
                     }
                     drawSymbol(ctx, enemy ? mapPoint(enemy) : null, "#ff5b64", "ENEMY", "circle");
                     if (player) {
                         const selfPoint = mapPoint(player);
-                        drawSymbol(ctx, selfPoint, "#39ff88", `SELF ${numberText(player.x, 1)},${numberText(player.y, 1)}`, "circle");
-                    } else {
-                        ctx.fillStyle = "rgba(57,255,136,0.82)";
-                        ctx.font = "12px Consolas, monospace";
-                        ctx.fillText("SELF WAITING: /info or /get_action", 18, staticPoint ? 112 : 92);
+                        drawSymbol(ctx, selfPoint, "#39ff88", "SELF", "circle");
                     }
                     if (activeMapTab === "ros") drawRosStatus(ctx, bridge, latest, w);
                 } catch (err) {
@@ -1680,7 +1641,6 @@ def render_view_page() -> str:
                 drawFeedOverlay(latestState || {});
             });
             byId("driveFeed").addEventListener("load", () => drawFeedOverlay(latestState || {}));
-            updateMapLegend();
             if (new URLSearchParams(window.location.search).get("map") === "ros") setMapTab("ros");
             fetchStaticMap();
             fetchDashboardState();

@@ -699,9 +699,11 @@ def route_start():
     if bridge:
         bridge.handle_start()
 
-    # 공식 API 응답 형식을 맞추기 위해 control key를 반환한다.
-    # 빈 문자열은 별도 pause/reset/start 명령을 내리지 않는다는 의미로 사용한다.
-    return jsonify({"control": os.environ.get("TANK_START_CONTROL", "start")})
+    # An empty control keeps the simulator's current Start/Pause state.
+    control = os.environ.get("TANK_START_CONTROL", "").strip().lower()
+    if control not in ("", "start", "pause"):
+        control = ""
+    return jsonify({"control": control})
 
 
 ############################################################

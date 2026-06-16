@@ -29,7 +29,6 @@ def generate_launch_description():
     apf_weights_file = os.path.join(potential_share, "config", "apf_weight_profiles.yaml")
 
     return LaunchDescription([
-        SetEnvironmentVariable("TANK_START_CONTROL", "start"),
         SetEnvironmentVariable("TANK_APF_PASSTHROUGH_WHEN_CLEAR", "true"),
 
         Node(
